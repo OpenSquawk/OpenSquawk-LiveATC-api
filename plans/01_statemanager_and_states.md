@@ -3,11 +3,11 @@
 
 
 ABlauf:
-ATC: callsign, wind xx, y knots, runway zz, cleared for takeoff
-Readback: cleared for takeoff runway zz, callsign
-nach abheben:
-ATC: callsign, contact departure at freq xxx...
-Readback: xxx, callsign
+ATC: callsign, wind xx, y knots, runway zz, cleared for takeoff  
+Readback: cleared for takeoff runway zz, callsign  
+nach abheben:  
+ATC: callsign, contact departure at freq xxx...  
+Readback: xxx, callsign  
 
 
 class StateManager
