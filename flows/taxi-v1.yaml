@@ -1,0 +1,269 @@
+slug: taxi
+schema_version: "2.0"
+name: "Ground Movement"
+description: "Pushback from stand, engine start, and taxi to runway after IFR clearance delivery"
+
+start_state: REQUEST_PUSHBACK
+end_states:
+  - TAXI_COMPLETE
+
+entry_mode: linear
+
+variables:
+  callsign:
+    type: string
+    initial: "DLH39A"
+    mutable_by: action_only
+  stand:
+    type: string
+    initial: "A12"
+    mutable_by: action_only
+  runway:
+    type: string
+    initial: "25L"
+    mutable_by: action_only
+  taxi_route:
+    type: string
+    initial: "Alpha, Bravo"
+    mutable_by: action_only
+  hold_short:
+    type: string
+    initial: "07"
+    mutable_by: action_only
+  qnh:
+    type: string
+    initial: "1013"
+    mutable_by: action_only
+
+flags:
+  pushback_approved:
+    initial: false
+  engines_running:
+    initial: false
+  taxi_clearance_given:
+    initial: false
+
+states:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 1. Pilot calls ground for pushback
+  # ─────────────────────────────────────────────────────────────────────────────
+  REQUEST_PUSHBACK:
+    role: pilot
+    phase: taxi
+    name: "Request Pushback"
+    description: "Pilot calls ground with callsign and stand number to request pushback clearance"
+    expected_pilot_template: "{{callsign}}, stand {{stand}}, request pushback"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next:
+      - to: ATC_PUSHBACK_CLEARANCE
+        trigger: "push.*back|pushback"
+        label: "Pilot requested pushback"
+
+    bad_next:
+      - to: REQUEST_PUSHBACK
+        label: "Incomplete call — state callsign, stand, and request pushback"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 2. Ground issues pushback clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_PUSHBACK_CLEARANCE:
+    role: atc
+    phase: taxi
+    name: "Ground Grants Pushback"
+    description: "Ground controller issues pushback clearance with stand and facing direction"
+    say_template: "{{callsign}}, push back approved, stand {{stand}}, face west"
+    expected_pilot_template: "Push back approved, stand {{stand}}, face west, {{callsign}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_PUSHBACK_READBACK
+        label: "Ground gave clearance — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: pushback_approved
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 3. Pilot reads back pushback clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_PUSHBACK_READBACK:
+    role: pilot
+    phase: taxi
+    name: "Pilot Reads Back Pushback Clearance"
+    description: "Pilot reads back stand number and facing direction to confirm pushback clearance"
+    expected_pilot_template: "Push back approved, stand {{stand}}, face west, {{callsign}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next:
+      - to: ATC_START_ENGINES
+        trigger: ".*"
+        label: "Pushback readback acknowledged"
+
+    bad_next: []
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 4. Ground clears engine start
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_START_ENGINES:
+    role: atc
+    phase: taxi
+    name: "Ground Clears Engine Start"
+    description: "After pushback is complete, ground clears the pilot to start engines and gives QNH"
+    say_template: "{{callsign}}, start approved, QNH {{qnh}}"
+    expected_pilot_template: "Start approved, QNH {{qnh}}, {{callsign}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_START_READBACK
+        label: "Engine start clearance issued — await pilot readback"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 5. Pilot reads back engine start clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_START_READBACK:
+    role: pilot
+    phase: taxi
+    name: "Pilot Reads Back Start Clearance"
+    description: "Pilot reads back engine start approval and QNH"
+    expected_pilot_template: "Start approved, QNH {{qnh}}, {{callsign}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    readback_required:
+      - qnh
+    readback_mode: simple
+
+    ok_next:
+      - to: REQUEST_TAXI
+        trigger: ".*"
+        label: "Start readback correct — engines running"
+
+    bad_next:
+      - to: PILOT_START_READBACK
+        trigger: ".*"
+        label: "Readback missing QNH — try again"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 6. Pilot requests taxi to runway
+  # ─────────────────────────────────────────────────────────────────────────────
+  REQUEST_TAXI:
+    role: pilot
+    phase: taxi
+    name: "Request Taxi"
+    description: "Pilot calls ground ready for taxi, stating destination runway"
+    expected_pilot_template: "{{callsign}}, ready for taxi, runway {{runway}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next:
+      - to: ATC_TAXI_INSTRUCTIONS
+        trigger: "taxi|ready.*taxi|taxi.*runway|request.*taxi"
+        label: "Pilot requested taxi"
+        on_enter_actions:
+          - type: set_flag
+            target: engines_running
+            value: true
+
+    bad_next:
+      - to: REQUEST_TAXI
+        label: "Incomplete taxi request"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 7. Ground issues taxi instructions
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_TAXI_INSTRUCTIONS:
+    role: atc
+    phase: taxi
+    name: "Ground Issues Taxi Instructions"
+    description: "Ground controller issues detailed routing: runway, taxiway route, and hold-short point"
+    say_template: "{{callsign}}, taxi to runway {{runway}} via {{taxi_route}}, hold short runway {{hold_short}}"
+    expected_pilot_template: "Runway {{runway}} via {{taxi_route}}, hold short runway {{hold_short}}, {{callsign}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_TAXI_READBACK
+        label: "Taxi instructions issued — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: taxi_clearance_given
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 8. Pilot reads back taxi instructions
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_TAXI_READBACK:
+    role: pilot
+    phase: taxi
+    name: "Pilot Reads Back Taxi Instructions"
+    description: "Pilot reads back runway, taxi route, and hold-short point — all three required"
+    expected_pilot_template: "Runway {{runway}} via {{taxi_route}}, hold short runway {{hold_short}}, {{callsign}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    readback_required:
+      - runway
+      - hold_short
+    readback_mode: simple
+
+    ok_next:
+      - to: ATC_TAXI_CONFIRMED
+        trigger: ".*"
+        label: "Taxi readback evaluated — correct"
+
+    bad_next:
+      - to: PILOT_TAXI_READBACK
+        trigger: ".*"
+        label: "Readback missing runway or hold-short — controller will repeat"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 9. Ground confirms taxi readback
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_TAXI_CONFIRMED:
+    role: atc
+    phase: taxi
+    name: "Ground Confirms Taxi Readback"
+    description: "Ground confirms readback correct and instructs pilot to monitor tower when approaching runway"
+    say_template: "Readback correct, {{callsign}}. Monitor tower 118.700 approaching runway {{runway}}."
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: TAXI_COMPLETE
+        label: "Taxi phase complete"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 10. End state — taxi complete, switch to tower
+  # ─────────────────────────────────────────────────────────────────────────────
+  TAXI_COMPLETE:
+    role: system
+    phase: taxi
+    name: "Taxi Complete"
+    description: "Ground movement phase complete. Switch to tower 118.700 when approaching runway."
+
+    ok_next: []
+    bad_next: []
+    auto_transitions: []
