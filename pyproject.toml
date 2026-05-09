@@ -1,15 +1,25 @@
 [tool.poetry]
 name = "opensquawk-liveatc-api"
-version = "0.1.0"
-description = ""
+version = "2.0.0"
+description = "PM radio training backend"
 authors = ["najajan <jan@najajan.de>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
-fastapi = {extras = ["standard"], version = "^0.129.0"}
+fastapi = {extras = ["standard"], version = "^0.115.0"}
+pyyaml = "^6.0"
+pydantic = "^2.0"
 
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+pytest-asyncio = "^0.23"
+httpx = "^0.27"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
