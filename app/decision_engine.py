@@ -251,9 +251,17 @@ def process_transmission(
     # --- Step 11: Transition ---
     session.current_state = next_state.id
 
-    # Auto-advance through any new system/atc states
+    # Auto-advance through any new system/atc states.
+    # We also collect the first ATC "say_template" we pass through so the
+    # frontend knows what the controller should speak after the transition.
     auto_advanced_states: List[str] = []
+    atc_say_template: Optional[str] = None
+
     if next_state.role != "pilot":
+        # Capture what the first non-pilot state wants to say before advancing past it.
+        if next_state.say_template:
+            atc_say_template = next_state.say_template
+
         try:
             final_state_id, advanced2 = advance_through_non_pilot(
                 next_state.id, flow, session.variables, session.flags
@@ -264,11 +272,19 @@ def process_transmission(
         auto_advanced_states = advanced2
         for sid in advanced2:
             trace.append(_trace("auto_advance", f"Auto-advanced through '{sid}'"))
+            # If an intermediate state has speech and we haven't captured one yet, use it.
+            if atc_say_template is None:
+                intermediate = flow.states.get(sid)
+                if intermediate and intermediate.say_template:
+                    atc_say_template = intermediate.say_template
+
         session.current_state = final_state_id
         next_state = _get_state(flow, final_state_id)
 
     # --- Step 12: Generate response ---
-    rendered = render_template(next_state.say_template, session.variables)
+    # Use ATC speech collected during auto-advance; fall back to the final state's template.
+    say_template = atc_say_template or next_state.say_template
+    rendered = render_template(say_template, session.variables)
     expected = render_template(next_state.expected_pilot_template, session.variables)
 
     # --- Step 13: Save session ---
@@ -285,7 +301,7 @@ def process_transmission(
     return DecisionResponse(
         session_id=session_id,
         next_state_id=next_state.id,
-        controller_say_template=next_state.say_template,
+        controller_say_template=say_template,
         controller_say_rendered=rendered,
         expected_pilot_template=expected,
         variables=dict(session.variables),
