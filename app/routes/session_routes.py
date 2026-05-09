@@ -1,0 +1,47 @@
+from fastapi import APIRouter, HTTPException
+
+from app.flow_loader import get_flow
+from app.models import CreateSessionRequest, CreateSessionResponse
+from app.session_store import create_session, delete_session, get_session, list_session_ids
+
+router = APIRouter(prefix="/api/radio", tags=["sessions"])
+
+
+@router.post("/session", response_model=CreateSessionResponse, status_code=201)
+def create_radio_session(body: CreateSessionRequest):
+    """Create a new training session for the given flow."""
+    try:
+        flow = get_flow(body.flow_slug)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    session = create_session(flow)
+    return CreateSessionResponse(
+        session_id=session.session_id,
+        flow_slug=session.active_flow,
+        current_state=session.current_state,
+        variables=session.variables,
+        flags=session.flags,
+    )
+
+
+@router.get("/session/{session_id}")
+def get_radio_session(session_id: str):
+    """Inspect the current state of a session."""
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return session.model_dump()
+
+
+@router.delete("/session/{session_id}", status_code=204)
+def delete_radio_session(session_id: str):
+    """Terminate a session."""
+    if not delete_session(session_id):
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+
+@router.get("/sessions")
+def list_sessions():
+    """List all active session IDs (debug endpoint)."""
+    return {"session_ids": list_session_ids()}
