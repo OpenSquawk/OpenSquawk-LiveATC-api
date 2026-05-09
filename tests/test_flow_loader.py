@@ -12,7 +12,7 @@ FLOWS_DIR = Path(__file__).parent.parent / "flows"
 
 class TestLoadFlowFromFile:
     def test_loads_clearance_flow(self, clearance_flow):
-        assert clearance_flow.slug == "clearance"
+        assert clearance_flow.slug == "icao_atc_decision_tree"
         assert clearance_flow.schema_version == "2.0"
 
     def test_start_state_in_states(self, clearance_flow):
@@ -53,7 +53,7 @@ class TestLoadFlowFromFile:
 class TestLoadAllFlows:
     def test_loads_all_yaml_files(self):
         flows = load_all_flows(FLOWS_DIR)
-        assert "clearance" in flows
+        assert "icao_atc_decision_tree" in flows
 
     def test_returns_dict_of_decision_flows(self):
         flows = load_all_flows(FLOWS_DIR)

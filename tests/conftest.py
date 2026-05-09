@@ -60,4 +60,4 @@ def make_simple_flow(states: dict) -> DecisionFlow:
 @pytest.fixture
 def clearance_flow():
     from app.flow_loader import load_flow_from_file
-    return load_flow_from_file(FLOWS_DIR / "clearance-v1.yaml")
+    return load_flow_from_file(FLOWS_DIR / "icao_atc_decision_tree-v1.yaml")

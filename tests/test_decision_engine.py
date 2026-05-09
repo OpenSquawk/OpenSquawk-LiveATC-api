@@ -21,7 +21,7 @@ def load_flows():
 @pytest.fixture
 def clearance_session():
     from app.flow_loader import get_flow
-    flow = get_flow("clearance")
+    flow = get_flow("icao_atc_decision_tree")
     # Ensure gates_clear is True so transitions work
     session = create_session(flow)
     session.flags["gates_clear"] = True

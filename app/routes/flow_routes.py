@@ -9,9 +9,19 @@ router = APIRouter(prefix="/api/decision-flows", tags=["flows"])
 
 @router.get("/runtime")
 def get_runtime_flows():
-    """Return all loaded flow definitions for frontend bootstrap."""
+    """Return all loaded flow definitions for frontend bootstrap.
+
+    Response shape matches what the frontend's fetchRuntimeTree expects:
+      { flows: { slug: DecisionFlow }, main: "slug-of-default-flow" }
+    """
     flows = get_all_flows()
-    return {"flows": {slug: flow.model_dump() for slug, flow in flows.items()}}
+    # Pick a main flow: prefer a flow called "icao_atc_decision_tree", else first loaded
+    slugs = list(flows.keys())
+    main_slug = "icao_atc_decision_tree" if "icao_atc_decision_tree" in flows else (slugs[0] if slugs else "")
+    return {
+        "flows": {slug: flow.model_dump() for slug, flow in flows.items()},
+        "main": main_slug,
+    }
 
 
 @router.get("/runtime/{slug}")

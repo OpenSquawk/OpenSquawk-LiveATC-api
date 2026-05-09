@@ -1,7 +1,7 @@
 slug: icao_atc_decision_tree
 schema_version: "2.0"
-name: "Initial Clearance"
-description: "Pilot requests and receives initial clearance to push back from gate"
+name: "ICAO ATC Decision Tree"
+description: "Full ATC training flow — clearance phase (Phase 1 of full ICAO flow)"
 
 start_state: REQUESTING_CLEARANCE
 end_states:
