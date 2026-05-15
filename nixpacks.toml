@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python312", "poetry"]
+
+[phases.install]
+cmds = ["poetry install --only main --no-interaction --no-ansi"]
+
+[start]
+cmd = "uvicorn main:app --host 0.0.0.0 --port ${PORT:-3000}"
