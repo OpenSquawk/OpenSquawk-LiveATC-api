@@ -1,0 +1,164 @@
+slug: icao_atc_decision_tree
+schema_version: "2.0"
+name: "IFR Clearance Delivery"
+description: "Pilot contacts clearance delivery, receives an IFR departure clearance, and reads it back correctly before handing off to ground"
+
+start_state: INITIAL_CALL
+end_states:
+  - CLEARANCE_COMPLETE
+
+entry_mode: main
+
+variables:
+  callsign:
+    type: string
+    initial: "DLH39A"
+    mutable_by: action_only
+  information:
+    type: string
+    initial: "K"
+    mutable_by: action_only
+  destination:
+    type: string
+    initial: "Munich"
+    mutable_by: action_only
+  stand:
+    type: string
+    initial: "A12"
+    mutable_by: action_only
+  sid:
+    type: string
+    initial: "BIBAX1N"
+    mutable_by: action_only
+  initial_altitude:
+    type: string
+    initial: "5000"
+    mutable_by: action_only
+  squawk:
+    type: string
+    initial: "2341"
+    mutable_by: action_only
+
+flags:
+  clearance_issued:
+    initial: false
+  readback_correct:
+    initial: false
+
+states:
+
+  INITIAL_CALL:
+    role: pilot
+    phase: clearance
+    name: "Initial Call to Clearance Delivery"
+    description: "Pilot calls clearance delivery with callsign, current ATIS information code, destination, stand number, and request for IFR clearance"
+    expected_pilot_template: "{{callsign}}, information {{information}}, IFR to {{destination}}, stand {{stand}}, request clearance"
+    frequency: "121.650"
+    frequency_name: "Clearance Delivery"
+
+    ok_next:
+      - to: ATC_ISSUES_CLEARANCE
+        trigger: "information|request.*clear|IFR|clearance|stand"
+        label: "Pilot called clearance delivery with required elements"
+
+    bad_next:
+      - to: INITIAL_CALL
+        label: "Incomplete initial call — include callsign, information code, destination, stand, and clearance request"
+
+    auto_transitions: []
+
+  ATC_ISSUES_CLEARANCE:
+    role: atc
+    phase: clearance
+    name: "ATC Issues IFR Clearance"
+    description: "Controller reads out the full departure clearance: destination, SID name, initial altitude, and squawk code"
+    say_template: "{{callsign}}, cleared to {{destination}} via {{sid}} departure, climb initially {{initial_altitude}} feet, squawk {{squawk}}"
+    expected_pilot_template: "Cleared {{destination}}, {{sid}} departure, climb initially {{initial_altitude}}, squawk {{squawk}}, {{callsign}}"
+    frequency: "121.650"
+    frequency_name: "Clearance Delivery"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_READBACK
+        label: "ATC finished reading clearance — awaiting pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: clearance_issued
+            value: true
+
+  PILOT_READBACK:
+    role: pilot
+    phase: clearance
+    name: "Pilot Reads Back Clearance"
+    description: "Pilot must read back destination, SID, initial altitude, squawk code, and own callsign"
+    expected_pilot_template: "Cleared {{destination}}, {{sid}}, climb initially {{initial_altitude}}, squawk {{squawk}}, {{callsign}}"
+    frequency: "121.650"
+    frequency_name: "Clearance Delivery"
+
+    readback_required:
+      - squawk
+      - initial_altitude
+    readback_mode: simple
+
+    ok_next:
+      - to: ATC_READBACK_CORRECT
+        trigger: ".*"
+        label: "Readback evaluated by readback evaluator — correct"
+
+    bad_next:
+      - to: PILOT_READBACK
+        trigger: ".*"
+        label: "Readback missing required elements — controller will repeat clearance"
+
+    auto_transitions: []
+
+  ATC_READBACK_CORRECT:
+    role: atc
+    phase: clearance
+    name: "ATC Confirms Readback"
+    description: "Controller confirms the readback was correct and instructs pilot to contact ground for pushback"
+    say_template: "Readback correct, {{callsign}}. Contact ground 121.800 when ready for pushback."
+    frequency: "121.650"
+    frequency_name: "Clearance Delivery"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: CLEARANCE_COMPLETE
+        label: "Clearance phase complete"
+        on_enter_actions:
+          - type: set_flag
+            target: readback_correct
+            value: true
+          - type: log
+            target: clearance_complete
+
+  CLEARANCE_COMPLETE:
+    role: system
+    phase: clearance
+    name: "Clearance Granted"
+    description: "IFR clearance phase complete. Switch to ground 121.800 for pushback."
+
+    ok_next: []
+    bad_next: []
+    auto_transitions: []
+
+  # Emergency handler — reachable from any pilot state via is_emergency transition.
+  # Add to a pilot state's ok_next to wire it up:
+  #   - to: MAYDAY_HANDLER
+  #     trigger: "mayday|pan.pan"
+  #     is_emergency: true
+  #     label: "Emergency declaration"
+  MAYDAY_HANDLER:
+    role: system
+    name: "Emergency — MAYDAY"
+    description: "Immediate handling of emergency declaration"
+    is_emergency: true
+    say_template: "{{callsign}}, say nature of emergency"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: CLEARANCE_COMPLETE
+        label: "Auto-close emergency flow (placeholder)"

@@ -9,9 +9,28 @@ router = APIRouter(prefix="/api/decision-flows", tags=["flows"])
 
 @router.get("/runtime")
 def get_runtime_flows():
-    """Return all loaded flow definitions for frontend bootstrap."""
+    """Return all loaded flow definitions for frontend bootstrap.
+
+    Shape matches the frontend RuntimeDecisionSystem interface:
+      { main, order, flows }
+    - main: slug of the primary flow (entry_mode == "main"), or first slug
+    - order: ordered list of slugs
+    - flows: full flow definitions keyed by slug
+    """
     flows = get_all_flows()
-    return {"flows": {slug: flow.model_dump() for slug, flow in flows.items()}}
+    order = list(flows.keys())
+
+    # The "main" flow is the one declared as entry_mode="main", falling back to first.
+    main_slug = next(
+        (slug for slug, f in flows.items() if f.entry_mode == "main"),
+        order[0] if order else "",
+    )
+
+    return {
+        "main": main_slug,
+        "order": order,
+        "flows": {slug: flow.model_dump() for slug, flow in flows.items()},
+    }
 
 
 @router.get("/runtime/{slug}")
