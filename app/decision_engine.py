@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.action_executor import execute_actions
 from app.auto_advance import advance_through_non_pilot
 from app.flow_loader import get_flow
+from app.flow_orchestrator import handle_flow_completion
+from app.guard_evaluator import evaluate_guard
 from app.models import (
     DecisionFlow,
     DecisionRequest,
@@ -157,13 +159,9 @@ def process_transmission(
 
     # --- Step 4: If current is system/atc, auto-advance to pilot state ---
     if current_state.role != "pilot":
-        try:
-            new_state_id, advanced = advance_through_non_pilot(
-                current_state.id, flow, session.variables, session.flags
-            )
-        except LoopDetectedError as exc:
-            raise
-
+        new_state_id, advanced, _ = advance_through_non_pilot(
+            current_state.id, flow, session.variables, session.flags
+        )
         for sid in advanced:
             trace.append(_trace("auto_advance", f"Auto-advanced through '{sid}'"))
         current_state = _get_state(flow, new_state_id)
@@ -258,28 +256,37 @@ def process_transmission(
     atc_say_template: Optional[str] = None
 
     if next_state.role != "pilot":
-        # Capture what the first non-pilot state wants to say before advancing past it.
         if next_state.say_template:
             atc_say_template = next_state.say_template
 
-        try:
-            final_state_id, advanced2 = advance_through_non_pilot(
-                next_state.id, flow, session.variables, session.flags
-            )
-        except LoopDetectedError as exc:
-            raise
-
+        final_state_id, advanced2, auto_transitions_taken = advance_through_non_pilot(
+            next_state.id, flow, session.variables, session.flags
+        )
         auto_advanced_states = advanced2
         for sid in advanced2:
             trace.append(_trace("auto_advance", f"Auto-advanced through '{sid}'"))
-            # If an intermediate state has speech and we haven't captured one yet, use it.
             if atc_say_template is None:
                 intermediate = flow.states.get(sid)
                 if intermediate and intermediate.say_template:
                     atc_say_template = intermediate.say_template
 
+        for auto_trans in auto_transitions_taken:
+            action_msgs = execute_actions(auto_trans.on_exit_actions + auto_trans.on_enter_actions, session)
+            for msg in action_msgs:
+                trace.append(_trace("action_execute", f"auto_advance: {msg}"))
+
         session.current_state = final_state_id
         next_state = _get_state(flow, final_state_id)
+
+    # --- Flow completion / interrupt resume ---
+    # If the new state is an end state and the flow stack is non-empty,
+    # orchestrator pops back to the interrupted flow automatically.
+    prev_flow_slug = flow.slug
+    handle_flow_completion(session, flow)
+    if session.active_flow != prev_flow_slug:
+        flow = get_flow(session.active_flow)
+        next_state = _get_state(flow, session.current_state)
+        trace.append(_trace("flow_resume", f"Resumed flow '{flow.slug}' at '{next_state.id}'"))
 
     # --- Step 12: Generate response ---
     # Use ATC speech collected during auto-advance; fall back to the final state's template.
@@ -309,5 +316,120 @@ def process_transmission(
         trace=trace,
         fallback_used=fallback_used,
         fallback_reason=fallback_reason,
+        auto_advanced_states=auto_advanced_states,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Timeout / silence handler
+# ---------------------------------------------------------------------------
+
+def process_timeout(session_id: str) -> DecisionResponse:
+    """Fire the silence timeout for the current pilot state.
+
+    The frontend calls this endpoint when the ``auto_advance_timeout_ms`` timer
+    expires without a pilot utterance.  The backend finds the first valid
+    ``auto_transition`` (trigger=None, guard passes) and advances through it.
+
+    Raises:
+      KeyError  — session not found
+      ValueError — current state doesn't support silence timeout
+    """
+    trace: List[TransitionTrace] = []
+
+    session = get_session(session_id)
+    if session is None:
+        raise KeyError(f"Session '{session_id}' not found")
+
+    flow = get_flow(session.active_flow)
+    current_state = _get_state(flow, session.current_state)
+    trace.append(_trace("timeout", f"Silence timeout fired in state '{current_state.id}'"))
+
+    if current_state.role != "pilot":
+        raise ValueError(
+            f"Timeout only applies to pilot states; "
+            f"'{current_state.id}' is role={current_state.role}"
+        )
+
+    if not current_state.auto_advance_on_silence:
+        raise ValueError(
+            f"State '{current_state.id}' does not have auto_advance_on_silence enabled"
+        )
+
+    # Find the first auto_transition with no trigger whose guard passes.
+    timeout_trans: Optional[Transition] = None
+    for t in current_state.auto_transitions:
+        if t.trigger is not None:
+            continue
+        if t.condition is None or evaluate_guard(t.condition, session.variables, session.flags):
+            timeout_trans = t
+            break
+
+    if timeout_trans is None:
+        raise ValueError(
+            f"No unconditional auto-transition found in state '{current_state.id}'"
+        )
+
+    if timeout_trans.to not in flow.states:
+        raise KeyError(f"Timeout target state '{timeout_trans.to}' not found in flow '{flow.slug}'")
+
+    next_state = _get_state(flow, timeout_trans.to)
+    trace.append(_trace("timeout_advance", f"'{current_state.id}' → '{next_state.id}'"))
+
+    # Apply side effects
+    _apply_transition_actions(timeout_trans, current_state, next_state, session, trace)
+    session.current_state = next_state.id
+
+    # Auto-advance through non-pilot states
+    auto_advanced_states: List[str] = []
+    atc_say_template: Optional[str] = None
+
+    if next_state.role != "pilot":
+        if next_state.say_template:
+            atc_say_template = next_state.say_template
+        final_state_id, advanced, auto_transitions_taken = advance_through_non_pilot(
+            next_state.id, flow, session.variables, session.flags
+        )
+        auto_advanced_states = advanced
+        for sid in advanced:
+            trace.append(_trace("auto_advance", f"Auto-advanced through '{sid}'"))
+            if atc_say_template is None:
+                intermediate = flow.states.get(sid)
+                if intermediate and intermediate.say_template:
+                    atc_say_template = intermediate.say_template
+        for auto_trans in auto_transitions_taken:
+            action_msgs = execute_actions(auto_trans.on_exit_actions + auto_trans.on_enter_actions, session)
+            for msg in action_msgs:
+                trace.append(_trace("action_execute", f"auto_advance: {msg}"))
+        session.current_state = final_state_id
+        next_state = _get_state(flow, final_state_id)
+
+    handle_flow_completion(session, flow)
+
+    say_template = atc_say_template or next_state.say_template
+    rendered = render_template(say_template, session.variables)
+    expected = render_template(next_state.expected_pilot_template, session.variables)
+
+    session.decision_history.append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "pilot_utterance": "__TIMEOUT__",
+        "previous_state": current_state.id,
+        "next_state": next_state.id,
+        "match_reason": "silence_timeout",
+        "fallback_used": False,
+    })
+    save_session(session)
+
+    return DecisionResponse(
+        session_id=session_id,
+        next_state_id=next_state.id,
+        controller_say_template=say_template,
+        controller_say_rendered=rendered,
+        expected_pilot_template=expected,
+        variables=dict(session.variables),
+        flags=dict(session.flags),
+        trace=trace,
+        fallback_used=False,
+        fallback_reason=None,
         auto_advanced_states=auto_advanced_states,
     )

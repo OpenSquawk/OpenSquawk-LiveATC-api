@@ -1,4 +1,4 @@
-slug: icao_atc_decision_tree
+slug: clearance-v1
 schema_version: "2.0"
 name: "IFR Clearance Delivery"
 description: "Pilot contacts clearance delivery, receives an IFR departure clearance, and reads it back correctly before handing off to ground"

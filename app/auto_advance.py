@@ -43,15 +43,16 @@ def advance_through_non_pilot(
     flow: DecisionFlow,
     variables: Dict[str, Any],
     flags: Dict[str, bool],
-) -> Tuple[str, List[str]]:
-    """
-    Walk forward through system/atc states until reaching a pilot state.
+) -> Tuple[str, List[str], List[Transition]]:
+    """Walk forward through system/atc states until reaching a pilot state.
 
-    Returns (final_state_id, list_of_auto_advanced_state_ids).
+    Returns (final_state_id, list_of_auto_advanced_state_ids, transitions_taken).
+    The caller is responsible for executing the actions on the returned transitions.
     Raises LoopDetectedError if a state is visited 5+ times.
     """
     visited: Dict[str, int] = {}
     advanced: List[str] = []
+    transitions_taken: List[Transition] = []
     current = start_state_id
 
     for _hop in range(MAX_HOPS):
@@ -61,9 +62,8 @@ def advance_through_non_pilot(
         state = flow.states[current]
 
         if state.role == "pilot":
-            return current, advanced
+            return current, advanced, transitions_taken
 
-        # Track visit count for loop detection
         visited[current] = visited.get(current, 0) + 1
         if visited[current] >= 5:
             loop_path = " → ".join(advanced + [current])
@@ -72,16 +72,15 @@ def advance_through_non_pilot(
                 f"Loop path: {loop_path}"
             )
 
-        # Find the next auto-transition
         next_trans = find_auto_transition(state, variables, flags)
 
         if next_trans is None:
-            # No auto-transition; stop here (e.g. end state or waiting state)
             logger.debug("No auto-transition from '%s' — stopping auto-advance", current)
-            return current, advanced
+            return current, advanced, transitions_taken
 
         logger.debug("Auto-advance: '%s' → '%s'", current, next_trans.to)
         advanced.append(next_trans.to)
+        transitions_taken.append(next_trans)
         current = next_trans.to
 
     raise LoopDetectedError(

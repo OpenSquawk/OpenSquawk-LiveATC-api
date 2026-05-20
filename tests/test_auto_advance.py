@@ -17,7 +17,7 @@ class TestAutoAdvance:
             "PILOT": make_state("PILOT", role="pilot"),
         }
         flow = make_simple_flow(states)
-        final, advanced = advance_through_non_pilot("PILOT", flow, VARS, FLAGS)
+        final, advanced, _ = advance_through_non_pilot("PILOT", flow, VARS, FLAGS)
         assert final == "PILOT"
         assert advanced == []
 
@@ -27,7 +27,7 @@ class TestAutoAdvance:
             "PILOT": make_state("PILOT", role="pilot"),
         }
         flow = make_simple_flow(states)
-        final, advanced = advance_through_non_pilot("ATC", flow, VARS, FLAGS)
+        final, advanced, _ = advance_through_non_pilot("ATC", flow, VARS, FLAGS)
         assert final == "PILOT"
         assert "PILOT" in advanced
 
@@ -38,7 +38,7 @@ class TestAutoAdvance:
             "PILOT": make_state("PILOT", role="pilot"),
         }
         flow = make_simple_flow(states)
-        final, advanced = advance_through_non_pilot("SYS1", flow, VARS, FLAGS)
+        final, advanced, _ = advance_through_non_pilot("SYS1", flow, VARS, FLAGS)
         assert final == "PILOT"
         assert advanced == ["SYS2", "PILOT"]
 
@@ -48,7 +48,7 @@ class TestAutoAdvance:
             "SYS": make_state("SYS", role="system"),  # no auto_transitions
         }
         flow = make_simple_flow(states)
-        final, advanced = advance_through_non_pilot("ATC", flow, VARS, FLAGS)
+        final, advanced, _ = advance_through_non_pilot("ATC", flow, VARS, FLAGS)
         assert final == "SYS"
 
     def test_loop_detected_after_5_visits(self):
@@ -82,6 +82,6 @@ class TestAutoAdvance:
         }
         flow = make_simple_flow(states)
         # open=False → guard fails → no auto-transition → stop at ATC
-        final, advanced = advance_through_non_pilot("ATC", flow, VARS, {"open": False})
+        final, advanced, _ = advance_through_non_pilot("ATC", flow, VARS, {"open": False})
         assert final == "ATC"
         assert advanced == []

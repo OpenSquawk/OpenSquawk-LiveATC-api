@@ -61,3 +61,9 @@ def make_simple_flow(states: dict) -> DecisionFlow:
 def clearance_flow():
     from app.flow_loader import load_flow_from_file
     return load_flow_from_file(FLOWS_DIR / "clearance-v1.yaml")
+
+
+@pytest.fixture
+def taxi_flow():
+    from app.flow_loader import load_flow_from_file
+    return load_flow_from_file(FLOWS_DIR / "taxi-v1.yaml")
