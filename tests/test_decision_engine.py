@@ -124,3 +124,90 @@ class TestDecisionEngine:
             DecisionRequest(pilot_utterance=GOOD_INITIAL_CALL),
         )
         assert hasattr(resp, "controller_say_rendered")
+
+    def test_end_state_raises_value_error(self, clearance_session):
+        """Transmitting after the flow ends raises ValueError, not a routing crash."""
+        process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance=GOOD_INITIAL_CALL),
+        )
+        process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance=GOOD_READBACK),
+        )
+        # Session is now at CLEARANCE_COMPLETE (end state, no stack)
+        with pytest.raises(ValueError, match="complete"):
+            process_transmission(
+                clearance_session.session_id,
+                DecisionRequest(pilot_utterance="anything"),
+            )
+
+
+class TestFlowInterrupt:
+    """Tests for the MAYDAY / PAN-PAN flow interrupt mechanism."""
+
+    @pytest.fixture
+    def clearance_session(self):
+        from app.flow_loader import get_flow
+        flow = get_flow("clearance")
+        return create_session(flow)
+
+    def test_mayday_from_initial_call_enters_emergency_flow(self, clearance_session):
+        """MAYDAY at INITIAL_CALL suspends clearance and enters emergency-v1."""
+        resp = process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance="MAYDAY MAYDAY MAYDAY"),
+        )
+        # Engine pushes clearance flow onto stack and enters emergency flow at MAYDAY_DECLARED.
+        # ATC auto-advances to PILOT_STATES_EMERGENCY immediately.
+        assert resp.next_state_id == "PILOT_STATES_EMERGENCY"
+        trace_types = [t.type for t in resp.trace]
+        assert "flow_interrupt" in trace_types
+
+    def test_mayday_flow_stack_has_clearance_flow(self, clearance_session):
+        """After MAYDAY interrupt the flow stack holds the clearance flow."""
+        process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance="MAYDAY MAYDAY MAYDAY"),
+        )
+        session = get_session(clearance_session.session_id)
+        assert len(session.flow_stack) == 1
+        assert session.flow_stack[0] == "clearance-v1"
+
+    def test_mayday_emergency_progresses_through_states(self, clearance_session):
+        """Can walk through the full emergency flow after a MAYDAY interrupt."""
+        process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance="MAYDAY MAYDAY MAYDAY"),
+        )
+        # Now at PILOT_STATES_EMERGENCY — pilot states the emergency
+        resp = process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance="MAYDAY MAYDAY MAYDAY, DLH39A, engine fire, 150 souls, 2 hours fuel, returning to stand"),
+        )
+        # Advances through ATC_EMERGENCY_RESPONSE (auto) → PILOT_INTENTIONS
+        assert resp.next_state_id == "PILOT_INTENTIONS"
+
+    def test_mayday_resume_restores_clearance_flow(self, clearance_session):
+        """After EMERGENCY_COMPLETE the engine pops back to the clearance flow."""
+        # 1. Trigger MAYDAY
+        process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance="MAYDAY MAYDAY MAYDAY"),
+        )
+        # 2. State emergency details (→ PILOT_INTENTIONS)
+        process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance="engine fire, 150 souls, fuel 2 hours, returning to stand"),
+        )
+        # 3. State intentions — reaches EMERGENCY_COMPLETE, engine pops flow
+        resp = process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance="DLH39A, returning to stand"),
+        )
+        session = get_session(clearance_session.session_id)
+        # Stack should be empty again; active flow back to clearance
+        assert len(session.flow_stack) == 0
+        assert session.active_flow == "clearance-v1"
+        # Resumed at INITIAL_CALL (where the interrupt happened)
+        assert resp.next_state_id == "INITIAL_CALL"

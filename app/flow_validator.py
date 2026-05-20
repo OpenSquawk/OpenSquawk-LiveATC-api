@@ -13,7 +13,10 @@ from app.models import DecisionFlow, DecisionState, FlowValidationResult, Valida
 
 
 def _reachable_states(flow: DecisionFlow, start: str) -> Set[str]:
-    """BFS to find all state IDs reachable from start."""
+    """BFS to find all state IDs reachable from start within this flow.
+
+    Cross-flow interrupt transitions are not followed — they exit this flow.
+    """
     visited: Set[str] = set()
     queue = deque([start])
     while queue:
@@ -24,6 +27,8 @@ def _reachable_states(flow: DecisionFlow, start: str) -> Set[str]:
         state = flow.states[sid]
         for trans_list in [state.ok_next, state.bad_next, state.auto_transitions]:
             for trans in trans_list:
+                if trans.interrupt_flow:
+                    continue  # Exit-flow edge; don't follow within this flow.
                 if trans.to not in visited:
                     queue.append(trans.to)
     return visited
@@ -65,9 +70,12 @@ def validate_flow(flow: DecisionFlow) -> FlowValidationResult:
                 message=f"end_state '{end}' not found in states",
             ))
 
-    # 3. All referenced states exist
+    # 3. All referenced states exist (cross-flow interrupt transitions are exempt —
+    #    their `to` refers to the entry state of another flow, validated at runtime).
     for sid, state in flow.states.items():
         for trans in _all_transitions(state):
+            if trans.interrupt_flow:
+                continue  # Target state lives in a different flow; skip here.
             if trans.to not in flow.states:
                 issues.append(ValidationIssue(
                     severity="error",

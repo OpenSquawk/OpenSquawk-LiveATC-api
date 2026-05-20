@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.action_executor import execute_actions
 from app.auto_advance import advance_through_non_pilot
 from app.flow_loader import get_flow
-from app.flow_orchestrator import handle_flow_completion
+from app.flow_orchestrator import handle_flow_completion, push_flow
 from app.guard_evaluator import evaluate_guard
 from app.models import (
     DecisionFlow,
@@ -32,9 +32,70 @@ from app.trigger_matcher import select_transition
 
 logger = logging.getLogger(__name__)
 
+_SEP = "─" * 60
+
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Logging helpers
+# ---------------------------------------------------------------------------
+
+def _fmt_dict(d: dict, max_items: int = 8) -> str:
+    """Compact single-line dict repr, trimmed to max_items."""
+    items = list(d.items())[:max_items]
+    suffix = ", …" if len(d) > max_items else ""
+    return "{" + ", ".join(f"{k}: {v!r}" for k, v in items) + suffix + "}"
+
+
+def _log_request(session_id: str, utterance: str, state_id: str, flow_slug: str,
+                 variables: dict, flags: dict) -> None:
+    logger.info(
+        "▶ TRANSMIT  session=%.8s  flow=%s  state=%s\n"
+        "  utterance : %r\n"
+        "  variables : %s\n"
+        "  flags     : %s",
+        session_id, flow_slug, state_id,
+        utterance,
+        _fmt_dict(variables),
+        _fmt_dict(flags),
+    )
+
+
+def _log_result(session_id: str, state_in: str, state_out: str, match_reason: str,
+                auto_advanced: List[str], fallback_used: bool, fallback_reason: Optional[str],
+                say_template: Optional[str], trace: List[Any]) -> None:
+    auto_str = " → ".join(auto_advanced) if auto_advanced else "none"
+    fallback_str = f"YES — {fallback_reason}" if fallback_used else "no"
+    logger.info(
+        "✓ RESULT    session=%.8s  %s → %s\n"
+        "  match     : %s\n"
+        "  auto-adv  : %s\n"
+        "  fallback  : %s\n"
+        "  say       : %s",
+        session_id, state_in, state_out,
+        match_reason,
+        auto_str,
+        fallback_str,
+        (say_template or "—")[:120],
+    )
+    # Emit each trace entry at DEBUG so it's available when LOG_LEVEL=DEBUG
+    # without polluting INFO output.
+    for t in trace:
+        logger.debug("  trace  [%s] %s", t.type, t.message)
+
+
+def _log_error(session_id: str, state_id: str, utterance: str, exc: Exception) -> None:
+    logger.error(
+        "✗ FAILED    session=%.8s  state=%s\n"
+        "  utterance : %r\n"
+        "  error     : %s: %s",
+        session_id, state_id,
+        utterance,
+        type(exc).__name__, exc,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Trace helper
 # ---------------------------------------------------------------------------
 
 def _trace(t: str, msg: str) -> TransitionTrace:
@@ -147,6 +208,7 @@ def process_transmission(
     # --- Step 1: Load session ---
     session = get_session(session_id)
     if session is None:
+        logger.warning("✗ TRANSMIT  session=%.8s  NOT FOUND", session_id)
         raise KeyError(f"Session '{session_id}' not found")
 
     # --- Step 2: Timer check (stub — timers not yet implemented) ---
@@ -155,6 +217,23 @@ def process_transmission(
     # --- Step 3: Load current state ---
     flow = get_flow(session.active_flow)
     current_state = _get_state(flow, session.current_state)
+
+    # Log the incoming request with full session context.
+    _log_request(
+        session_id=session_id,
+        utterance=request.pilot_utterance,
+        state_id=current_state.id,
+        flow_slug=flow.slug,
+        variables=session.variables,
+        flags=session.flags,
+    )
+    # --- Guard: reject transmissions when the session is at a flow end state ---
+    if session.current_state in flow.end_states and not session.flow_stack:
+        raise ValueError(
+            f"Flow '{flow.slug}' is complete (at end state '{session.current_state}'). "
+            "Start a new session to continue training."
+        )
+
     trace.append(_trace("state_enter", f"Current state: '{current_state.id}' (role={current_state.role})"))
 
     # --- Step 4: If current is system/atc, auto-advance to pilot state ---
@@ -236,11 +315,37 @@ def process_transmission(
                     f"for utterance '{request.pilot_utterance}' and no bad_next defined"
                 )
 
-    # --- Step 9: Validate selected state ---
-    if selected_transition.to not in flow.states:
-        raise KeyError(f"Selected next state '{selected_transition.to}' not found in flow '{flow.slug}'")
+    # --- Step 9: Validate selected state + handle flow interrupt ---
+    if selected_transition.interrupt_flow:
+        # This transition suspends the current flow and activates a new one.
+        interrupt_slug = selected_transition.interrupt_flow
+        try:
+            interrupt_flow_def = get_flow(interrupt_slug)
+        except KeyError:
+            raise KeyError(
+                f"Interrupt flow '{interrupt_slug}' not found. "
+                f"Available: {list({})}"
+            )
+        entry_state_id = selected_transition.to
+        if entry_state_id not in interrupt_flow_def.states:
+            raise KeyError(
+                f"Interrupt entry state '{entry_state_id}' not found in flow '{interrupt_slug}'"
+            )
+        push_flow(session, interrupt_slug, entry_state_id)
+        trace.append(_trace(
+            "flow_interrupt",
+            f"Suspended '{flow.slug}' at '{current_state.id}' → "
+            f"started '{interrupt_slug}' at '{entry_state_id}'"
+        ))
+        flow = interrupt_flow_def
+        next_state = _get_state(flow, entry_state_id)
+    else:
+        if selected_transition.to not in flow.states:
+            raise KeyError(
+                f"Selected next state '{selected_transition.to}' not found in flow '{flow.slug}'"
+            )
+        next_state = _get_state(flow, selected_transition.to)
 
-    next_state = _get_state(flow, selected_transition.to)
     trace.append(_trace("transition", f"'{current_state.id}' → '{next_state.id}'"))
 
     # --- Step 10: Apply side effects ---
@@ -304,6 +409,18 @@ def process_transmission(
         "fallback_used": fallback_used,
     })
     save_session(session)
+
+    _log_result(
+        session_id=session_id,
+        state_in=current_state.id,
+        state_out=next_state.id,
+        match_reason=match_reason,
+        auto_advanced=auto_advanced_states,
+        fallback_used=fallback_used,
+        fallback_reason=fallback_reason,
+        say_template=say_template,
+        trace=trace,
+    )
 
     return DecisionResponse(
         session_id=session_id,

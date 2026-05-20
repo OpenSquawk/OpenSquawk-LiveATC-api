@@ -1,9 +1,12 @@
+import logging
+
 from fastapi import APIRouter, HTTPException
 
 from app.flow_loader import get_flow
 from app.models import CreateSessionRequest, CreateSessionResponse
 from app.session_store import create_session, delete_session, get_session, list_session_ids
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/radio", tags=["sessions"])
 
 
@@ -13,9 +16,18 @@ def create_radio_session(body: CreateSessionRequest):
     try:
         flow = get_flow(body.flow_slug)
     except KeyError as exc:
+        logger.warning("SESSION CREATE  flow=%s  NOT FOUND", body.flow_slug)
         raise HTTPException(status_code=404, detail=str(exc))
 
     session = create_session(flow)
+    logger.info(
+        "SESSION CREATE  session=%.8s  flow=%s  start=%s  vars=%s  flags=%s",
+        session.session_id,
+        session.active_flow,
+        session.current_state,
+        dict(session.variables),
+        dict(session.flags),
+    )
     return CreateSessionResponse(
         session_id=session.session_id,
         flow_slug=session.active_flow,
@@ -39,6 +51,7 @@ def delete_radio_session(session_id: str):
     """Terminate a session."""
     if not delete_session(session_id):
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    logger.info("SESSION DELETE  session=%.8s", session_id)
 
 
 @router.get("/sessions")

@@ -1,9 +1,11 @@
 """FastAPI application entrypoint."""
 
 import logging
+import time
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import FLOWS_DIR, LOG_LEVEL
 from app.flow_loader import load_all_flows
@@ -12,8 +14,38 @@ from app.routes.decision_routes import router as decision_router
 from app.routes.flow_routes import router as flow_router
 from app.routes.session_routes import router as session_router
 
-logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+    datefmt="%H:%M:%S",
+)
 logger = logging.getLogger(__name__)
+
+
+class RequestLogMiddleware(BaseHTTPMiddleware):
+    """Log every HTTP request with method, path, status code, and duration."""
+
+    SKIP_PATHS = {"/", "/docs", "/openapi.json", "/redoc"}
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path in self.SKIP_PATHS:
+            return await call_next(request)
+
+        t0 = time.perf_counter()
+        response = await call_next(request)
+        ms = (time.perf_counter() - t0) * 1000
+
+        level = logging.WARNING if response.status_code >= 400 else logging.INFO
+        logger.log(
+            level,
+            "%s %s  →  %d  (%.0f ms)",
+            request.method,
+            request.url.path,
+            response.status_code,
+            ms,
+        )
+        return response
+
 
 app = FastAPI(
     title="OpenSquawk LiveATC API",
@@ -21,6 +53,9 @@ app = FastAPI(
     version="2.0.0",
 )
 
+# Middleware order matters: CORS first, logging second (so CORS headers are set
+# before the response code is read by the logger).
+app.add_middleware(RequestLogMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
