@@ -53,11 +53,6 @@ states:
     frequency_name: "Departure"
 
     ok_next:
-      - to: MAYDAY_DECLARED
-        trigger: "mayday|pan.pan|pan pan"
-        is_emergency: true
-        interrupt_flow: emergency-v1
-        label: "Emergency — interrupts departure flow"
       - to: ATC_RADAR_CONTACT
         trigger: "passing|climbing|departure|with you|check.*in|identified"
         label: "Pilot checked in with departure"
@@ -109,11 +104,6 @@ states:
     readback_mode: simple
 
     ok_next:
-      - to: MAYDAY_DECLARED
-        trigger: "mayday|pan.pan|pan pan"
-        is_emergency: true
-        interrupt_flow: emergency-v1
-        label: "Emergency during climb readback"
       - to: ATC_CLIMB_CONFIRMED
         trigger: ".*"
         label: "Climb readback evaluated — correct"

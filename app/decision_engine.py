@@ -7,6 +7,7 @@ LLM fallback is stubbed and will be wired in Phase 5.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,6 +34,17 @@ from app.trigger_matcher import select_transition
 logger = logging.getLogger(__name__)
 
 _SEP = "─" * 60
+
+# ---------------------------------------------------------------------------
+# Global emergency intercept
+# ---------------------------------------------------------------------------
+# Any pilot utterance matching this pattern triggers the emergency flow
+# regardless of which state the session is currently in.  Flow authors do
+# NOT need to add MAYDAY transitions to individual states.
+
+_EMERGENCY_RE = re.compile(r"mayday|pan[.\s]pan", re.IGNORECASE)
+_EMERGENCY_FLOW = "emergency-v1"
+_EMERGENCY_ENTRY = "MAYDAY_DECLARED"
 
 
 # ---------------------------------------------------------------------------
@@ -120,17 +132,9 @@ def _select_pilot_transition(
 
     Returns (transition, reason, used_bad_next).
 
-    Emergency transitions are checked across all candidates first.
+    Note: global emergency interception (MAYDAY / PAN-PAN) is handled
+    upstream in process_transmission before this function is called.
     """
-    all_candidates = state.ok_next + state.bad_next
-
-    # Emergency override across everything
-    for t in all_candidates:
-        if t.is_emergency and t.trigger:
-            import re
-            if re.search(t.trigger, pilot_utterance, re.IGNORECASE):
-                return t, "emergency_override", False
-
     # Phase 1: try ok_next only
     ok_trans, ok_reason = select_transition(
         pilot_utterance, state.ok_next, variables, flags
@@ -253,18 +257,44 @@ def process_transmission(
     all_candidates = current_state.ok_next + current_state.bad_next
     trace.append(_trace("candidates", f"Built {len(all_candidates)} candidates: {[t.to for t in all_candidates]}"))
 
-    # --- Step 6: Match utterance against candidates (emergency first, ok_next before bad_next) ---
-    selected_transition, match_reason, used_bad_next = _select_pilot_transition(
-        request.pilot_utterance,
-        current_state,
-        session.variables,
-        session.flags,
-        trace,
-    )
+    # --- Step 5b: Global emergency intercept (MAYDAY / PAN-PAN) ---
+    # Applied before any state-specific routing so every pilot state in every
+    # flow is interruptible without needing explicit ok_next entries in the YAML.
+    selected_transition: Optional[Transition] = None
+    match_reason = "no_match"
+    used_bad_next = False
 
-    if match_reason == "emergency_override":
-        trace.append(_trace("emergency_override", f"EMERGENCY transition matched → '{selected_transition.to}'"))
-    elif match_reason == "regex_match":
+    if _EMERGENCY_RE.search(request.pilot_utterance) and session.active_flow != _EMERGENCY_FLOW:
+        try:
+            emg_flow = get_flow(_EMERGENCY_FLOW)
+            if _EMERGENCY_ENTRY in emg_flow.states:
+                selected_transition = Transition(
+                    to=_EMERGENCY_ENTRY,
+                    trigger=_EMERGENCY_RE.pattern,
+                    is_emergency=True,
+                    interrupt_flow=_EMERGENCY_FLOW,
+                    label="Global MAYDAY / PAN-PAN emergency override",
+                )
+                match_reason = "emergency_override"
+                trace.append(_trace(
+                    "emergency_override",
+                    f"Global MAYDAY/PAN-PAN — suspending '{flow.slug}' → "
+                    f"'{_EMERGENCY_FLOW}'@'{_EMERGENCY_ENTRY}'",
+                ))
+        except KeyError:
+            logger.warning("Emergency flow '%s' not loaded — MAYDAY not intercepted", _EMERGENCY_FLOW)
+
+    # --- Step 6: Match utterance against state candidates (if not already an emergency) ---
+    if selected_transition is None:
+        selected_transition, match_reason, used_bad_next = _select_pilot_transition(
+            request.pilot_utterance,
+            current_state,
+            session.variables,
+            session.flags,
+            trace,
+        )
+
+    if match_reason == "regex_match":
         trace.append(_trace("regex_match", f"Trigger matched → '{selected_transition.to}' ({selected_transition.label or ''})"))
     elif match_reason == "ambiguous_first":
         trace.append(_trace("ambiguous", f"Ambiguous match — took first candidate '{selected_transition.to}'"))

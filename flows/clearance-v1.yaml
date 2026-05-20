@@ -56,11 +56,6 @@ states:
     frequency_name: "Clearance Delivery"
 
     ok_next:
-      - to: MAYDAY_DECLARED
-        trigger: "mayday|pan.pan|pan pan"
-        is_emergency: true
-        interrupt_flow: emergency-v1
-        label: "Emergency declaration — interrupts clearance flow"
       - to: ATC_ISSUES_CLEARANCE
         trigger: "information|request.*clear|IFR|clearance|stand"
         label: "Pilot called clearance delivery with required elements"
@@ -103,11 +98,6 @@ states:
     readback_mode: simple
 
     ok_next:
-      - to: MAYDAY_DECLARED
-        trigger: "mayday|pan.pan|pan pan"
-        is_emergency: true
-        interrupt_flow: emergency-v1
-        label: "Emergency declaration mid-readback — interrupts clearance flow"
       - to: ATC_READBACK_CORRECT
         trigger: ".*"
         label: "Readback evaluated by readback evaluator — correct"

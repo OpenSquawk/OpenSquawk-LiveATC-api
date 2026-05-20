@@ -53,11 +53,6 @@ states:
     frequency_name: "Tower"
 
     ok_next:
-      - to: MAYDAY_DECLARED
-        trigger: "mayday|pan.pan|pan pan"
-        is_emergency: true
-        interrupt_flow: emergency-v1
-        label: "Emergency — interrupts tower flow"
       - to: ATC_LINEUP_CLEARANCE
         trigger: "holding.*short|holding short|ready.*departure|ready.*take.*off|information"
         label: "Pilot reported holding short and ready"
@@ -105,11 +100,6 @@ states:
     readback_mode: simple
 
     ok_next:
-      - to: MAYDAY_DECLARED
-        trigger: "mayday|pan.pan|pan pan"
-        is_emergency: true
-        interrupt_flow: emergency-v1
-        label: "Emergency during lineup readback"
       - to: ATC_TAKEOFF_CLEARANCE
         trigger: ".*"
         label: "Lineup readback evaluated — correct"
@@ -174,11 +164,6 @@ states:
     readback_mode: simple
 
     ok_next:
-      - to: MAYDAY_DECLARED
-        trigger: "mayday|pan.pan|pan pan"
-        is_emergency: true
-        interrupt_flow: emergency-v1
-        label: "Emergency before/during takeoff roll"
       - to: ATC_AIRBORNE_HANDOFF
         trigger: ".*"
         label: "Takeoff readback evaluated — correct"
