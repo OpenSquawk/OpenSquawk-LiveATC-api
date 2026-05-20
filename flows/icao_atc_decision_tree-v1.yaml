@@ -73,7 +73,7 @@ states:
     name: "ATC Issues IFR Clearance"
     description: "Controller reads out the full departure clearance: destination, SID name, initial altitude, and squawk code"
     say_template: "{{callsign}}, cleared to {{destination}} via {{sid}} departure, climb initially {{initial_altitude}} feet, squawk {{squawk}}"
-    expected_pilot_template: "Cleared {{destination}}, {{sid}} departure, climb initially {{initial_altitude}}, squawk {{squawk}}, {{callsign}}"
+#    expected_pilot_template: "Cleared {{destination}}, {{sid}} departure, climb initially {{initial_altitude}}, squawk {{squawk}}, {{callsign}}"
     frequency: "121.650"
     frequency_name: "Clearance Delivery"
 

@@ -4,6 +4,9 @@ version = "2.0.0"
 description = "PM radio training backend"
 authors = ["najajan <jan@najajan.de>"]
 readme = "README.md"
+homepage = "https://opensquawk.de/"
+repository = "https://github.com/OpenSquawk/OpenSquawk-LiveATC-api"
+package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.12"
