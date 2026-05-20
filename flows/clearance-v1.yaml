@@ -57,6 +57,11 @@ states:
     frequency_name: "Clearance Delivery"
 
     ok_next:
+      - to: MAYDAY_DECLARED
+        trigger: "mayday|pan.pan|pan pan"
+        is_emergency: true
+        interrupt_flow: emergency-v1
+        label: "Emergency declaration — interrupts clearance flow"
       - to: ATC_ISSUES_CLEARANCE
         trigger: "information|request.*clear|IFR|clearance|stand"
         label: "Pilot called clearance delivery with required elements"
@@ -73,7 +78,6 @@ states:
     name: "ATC Issues IFR Clearance"
     description: "Controller reads out the full departure clearance: destination, SID name, initial altitude, and squawk code"
     say_template: "{{callsign}}, cleared to {{destination}} via {{sid}} departure, climb initially {{initial_altitude}} feet, squawk {{squawk}}"
-#    expected_pilot_template: "Cleared {{destination}}, {{sid}} departure, climb initially {{initial_altitude}}, squawk {{squawk}}, {{callsign}}"
     frequency: "121.650"
     frequency_name: "Clearance Delivery"
 
@@ -102,6 +106,11 @@ states:
     readback_mode: simple
 
     ok_next:
+      - to: MAYDAY_DECLARED
+        trigger: "mayday|pan.pan|pan pan"
+        is_emergency: true
+        interrupt_flow: emergency-v1
+        label: "Emergency declaration mid-readback — interrupts clearance flow"
       - to: ATC_READBACK_CORRECT
         trigger: ".*"
         label: "Readback evaluated by readback evaluator — correct"
@@ -143,22 +152,3 @@ states:
     ok_next: []
     bad_next: []
     auto_transitions: []
-
-  # Emergency handler — reachable from any pilot state via is_emergency transition.
-  # Add to a pilot state's ok_next to wire it up:
-  #   - to: MAYDAY_HANDLER
-  #     trigger: "mayday|pan.pan"
-  #     is_emergency: true
-  #     label: "Emergency declaration"
-  MAYDAY_HANDLER:
-    role: system
-    name: "Emergency — MAYDAY"
-    description: "Immediate handling of emergency declaration"
-    is_emergency: true
-    say_template: "{{callsign}}, say nature of emergency"
-
-    ok_next: []
-    bad_next: []
-    auto_transitions:
-      - to: CLEARANCE_COMPLETE
-        label: "Auto-close emergency flow (placeholder)"

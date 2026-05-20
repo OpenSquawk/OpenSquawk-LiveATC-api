@@ -1,0 +1,85 @@
+slug: emergency-v1
+schema_version: "2.0"
+name: "Emergency Handling"
+description: >
+  MAYDAY / PAN-PAN emergency handling.
+  Interrupts the active flow and automatically resumes it when resolved.
+
+start_state: MAYDAY_DECLARED
+end_states:
+  - EMERGENCY_COMPLETE
+
+entry_mode: interrupt
+
+variables: {}
+
+flags:
+  emergency_handled:
+    initial: false
+
+states:
+
+  MAYDAY_DECLARED:
+    role: atc
+    name: "MAYDAY Declared"
+    description: "ATC acknowledges the emergency declaration and requests emergency details"
+    say_template: "{{callsign}}, MAYDAY acknowledged. Say nature of emergency, persons on board, and fuel remaining."
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_STATES_EMERGENCY
+        label: "ATC ready — awaiting pilot emergency description"
+
+  PILOT_STATES_EMERGENCY:
+    role: pilot
+    name: "Pilot States Emergency"
+    description: "Pilot declares the nature of the emergency using standard MAYDAY format"
+    expected_pilot_template: "MAYDAY MAYDAY MAYDAY, {{callsign}}, [nature of emergency], [persons on board], [fuel remaining], [intentions]"
+
+    ok_next:
+      - to: ATC_EMERGENCY_RESPONSE
+        trigger: ".*"
+        label: "Pilot stated emergency details"
+
+    bad_next: []
+    auto_transitions: []
+
+  ATC_EMERGENCY_RESPONSE:
+    role: atc
+    name: "ATC Emergency Response"
+    description: "ATC coordinates with emergency services and provides holding instructions"
+    say_template: "{{callsign}}, roger MAYDAY. All stations, MAYDAY traffic. Squawk 7700. Emergency services on standby. What are your intentions?"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_INTENTIONS
+        label: "ATC response complete — awaiting pilot intentions"
+        on_enter_actions:
+          - type: set_flag
+            target: emergency_handled
+            value: true
+
+  PILOT_INTENTIONS:
+    role: pilot
+    name: "Pilot States Intentions"
+    description: "Pilot confirms their intentions — divert, return, continue, or declare status"
+    expected_pilot_template: "{{callsign}}, [intentions — e.g. returning to stand / diverting to EDDF]"
+
+    ok_next:
+      - to: EMERGENCY_COMPLETE
+        trigger: ".*"
+        label: "Intentions received — emergency handling complete"
+
+    bad_next: []
+    auto_transitions: []
+
+  EMERGENCY_COMPLETE:
+    role: system
+    name: "Emergency Resolved"
+    description: "Emergency handling complete. Flow orchestrator resumes the interrupted flow."
+
+    ok_next: []
+    bad_next: []
+    auto_transitions: []

@@ -39,6 +39,9 @@ class Transition(BaseModel):
     label: Optional[str] = None
     on_enter_actions: List[Action] = Field(default_factory=list)
     on_exit_actions: List[Action] = Field(default_factory=list)
+    # When set, the engine suspends the current flow (push onto stack) and
+    # activates the named flow at the state given by `to`.
+    interrupt_flow: Optional[str] = None
 
     @model_validator(mode="after")
     def _compile_trigger(self) -> "Transition":
