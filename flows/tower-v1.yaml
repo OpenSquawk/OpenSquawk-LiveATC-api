@@ -1,0 +1,301 @@
+slug: tower-v1
+schema_version: "2.0"
+name: "Tower — Lineup and Takeoff"
+description: "Pilot contacts tower holding short, receives line-up-and-wait then takeoff clearance, reads both back, and is handed off to departure control"
+
+start_state: INITIAL_CONTACT
+end_states:
+  - TOWER_COMPLETE
+
+entry_mode: main
+
+variables:
+  callsign:
+    type: string
+    initial: "DLH39A"
+    mutable_by: action_only
+  runway:
+    type: string
+    initial: "25L"
+    mutable_by: action_only
+  surface_wind:
+    type: string
+    initial: "250/07"
+    mutable_by: action_only
+  information:
+    type: string
+    initial: "K"
+    mutable_by: action_only
+  departure_freq:
+    type: string
+    initial: "120.800"
+    mutable_by: action_only
+
+flags:
+  lineup_clearance_issued:
+    initial: false
+  takeoff_clearance_issued:
+    initial: false
+  airborne:
+    initial: false
+
+states:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 1. Pilot calls tower holding short of active runway
+  # ─────────────────────────────────────────────────────────────────────────────
+  INITIAL_CONTACT:
+    role: pilot
+    phase: tower
+    name: "Initial Contact — Holding Short"
+    description: "Pilot calls tower with callsign, holding-short runway, ATIS information code, and readiness for departure"
+    expected_pilot_template: "{{callsign}}, holding short runway {{runway}}, information {{information}}, ready for departure"
+    frequency_name: "Tower"
+
+    ok_next:
+      - to: MAYDAY_DECLARED
+        trigger: "mayday|pan.pan|pan pan"
+        is_emergency: true
+        interrupt_flow: emergency-v1
+        label: "Emergency — interrupts tower flow"
+      - to: ATC_LINEUP_CLEARANCE
+        trigger: "holding.*short|holding short|ready.*departure|ready.*take.*off|information"
+        label: "Pilot reported holding short and ready"
+
+    bad_next:
+      - to: INITIAL_CONTACT
+        label: "Incomplete call — include callsign, runway, information code, and readiness"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 2. Tower issues line-up-and-wait
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_LINEUP_CLEARANCE:
+    role: atc
+    phase: tower
+    name: "Tower Issues Line-Up-and-Wait"
+    description: "Tower instructs the pilot to enter and line up on the runway and wait"
+    say_template: "{{callsign}}, runway {{runway}}, line up and wait"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_LINEUP_READBACK
+        label: "Line-up-and-wait issued — awaiting pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: lineup_clearance_issued
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 3. Pilot reads back lineup clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_LINEUP_READBACK:
+    role: pilot
+    phase: tower
+    name: "Pilot Reads Back Line-Up-and-Wait"
+    description: "Pilot reads back the runway number to confirm line-up-and-wait instruction"
+    expected_pilot_template: "Line up and wait, runway {{runway}}, {{callsign}}"
+    frequency_name: "Tower"
+
+    readback_required:
+      - runway
+    readback_mode: simple
+
+    ok_next:
+      - to: MAYDAY_DECLARED
+        trigger: "mayday|pan.pan|pan pan"
+        is_emergency: true
+        interrupt_flow: emergency-v1
+        label: "Emergency during lineup readback"
+      - to: ATC_TAKEOFF_CLEARANCE
+        trigger: ".*"
+        label: "Lineup readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_LINEUP_READBACK_INCORRECT
+        label: "Readback missing runway designation — controller corrects"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 4. ATC corrects incomplete lineup readback
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_LINEUP_READBACK_INCORRECT:
+    role: atc
+    phase: tower
+    name: "ATC Corrects Lineup Readback"
+    description: "Controller repeats the runway number for the pilot to include in the readback"
+    say_template: "Negative, {{callsign}}, say again: runway {{runway}}, line up and wait"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_LINEUP_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 5. Tower issues takeoff clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_TAKEOFF_CLEARANCE:
+    role: atc
+    phase: tower
+    name: "Tower Issues Takeoff Clearance"
+    description: "Tower clears the aircraft for takeoff with current surface wind and active runway"
+    say_template: "{{callsign}}, wind {{surface_wind}}, runway {{runway}}, cleared for takeoff"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_TAKEOFF_READBACK
+        label: "Takeoff clearance given — awaiting pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: takeoff_clearance_issued
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 6. Pilot reads back takeoff clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_TAKEOFF_READBACK:
+    role: pilot
+    phase: tower
+    name: "Pilot Reads Back Takeoff Clearance"
+    description: "Pilot must read back the runway and cleared-for-takeoff — callsign required"
+    expected_pilot_template: "Cleared for takeoff, runway {{runway}}, {{callsign}}"
+    frequency_name: "Tower"
+
+    readback_required:
+      - runway
+    readback_mode: simple
+
+    ok_next:
+      - to: MAYDAY_DECLARED
+        trigger: "mayday|pan.pan|pan pan"
+        is_emergency: true
+        interrupt_flow: emergency-v1
+        label: "Emergency before/during takeoff roll"
+      - to: ATC_AIRBORNE_HANDOFF
+        trigger: ".*"
+        label: "Takeoff readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_TAKEOFF_READBACK_INCORRECT
+        label: "Readback missing runway — controller corrects"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 7. ATC corrects incomplete takeoff readback
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_TAKEOFF_READBACK_INCORRECT:
+    role: atc
+    phase: tower
+    name: "ATC Corrects Takeoff Readback"
+    description: "Controller repeats the runway number for the takeoff clearance readback"
+    say_template: "Negative, {{callsign}}, say again: runway {{runway}}, cleared for takeoff"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_TAKEOFF_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 8. Tower hands off to departure control (airborne)
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_AIRBORNE_HANDOFF:
+    role: atc
+    phase: tower
+    name: "Tower Hands Off to Departure"
+    description: "After takeoff, tower instructs the pilot to contact departure control on the assigned frequency"
+    say_template: "{{callsign}}, airborne, contact departure {{departure_freq}}"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_HANDOFF_READBACK
+        label: "Handoff instruction given — awaiting pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: airborne
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 9. Pilot reads back departure frequency
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_HANDOFF_READBACK:
+    role: pilot
+    phase: tower
+    name: "Pilot Reads Back Departure Frequency"
+    description: "Pilot reads back the departure frequency and own callsign to confirm frequency change"
+    expected_pilot_template: "{{departure_freq}}, {{callsign}}"
+    frequency_name: "Tower"
+
+    readback_required:
+      - departure_freq
+    readback_mode: simple
+
+    ok_next:
+      - to: ATC_HANDOFF_CONFIRMED
+        trigger: ".*"
+        label: "Departure frequency readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_HANDOFF_READBACK_INCORRECT
+        label: "Readback missing departure frequency — controller corrects"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 10. ATC corrects incomplete frequency readback
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_HANDOFF_READBACK_INCORRECT:
+    role: atc
+    phase: tower
+    name: "ATC Corrects Frequency Readback"
+    description: "Controller repeats the departure frequency for the pilot"
+    say_template: "Negative, {{callsign}}, departure on {{departure_freq}}"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_HANDOFF_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 11. Tower confirms correct readback
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_HANDOFF_CONFIRMED:
+    role: atc
+    phase: tower
+    name: "Tower Confirms Departure Handoff"
+    description: "Tower acknowledges correct frequency readback"
+    say_template: "Readback correct, {{callsign}}, good day"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: TOWER_COMPLETE
+        label: "Tower phase complete — pilot switching to departure"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 12. End state
+  # ─────────────────────────────────────────────────────────────────────────────
+  TOWER_COMPLETE:
+    role: system
+    phase: tower
+    name: "Tower Phase Complete"
+    description: "Takeoff and departure handoff complete. Switch to departure on {{departure_freq}}."
+
+    ok_next: []
+    bad_next: []
+    auto_transitions: []

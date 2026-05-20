@@ -1,0 +1,176 @@
+slug: departure-v1
+schema_version: "2.0"
+name: "Departure — Initial Climb"
+description: "Pilot checks in with departure control after takeoff, receives radar contact and climb clearance, reads it back correctly"
+
+start_state: INITIAL_CONTACT
+end_states:
+  - DEPARTURE_COMPLETE
+
+entry_mode: main
+
+variables:
+  callsign:
+    type: string
+    initial: "DLH39A"
+    mutable_by: action_only
+  passing_altitude:
+    type: string
+    initial: "1500"
+    mutable_by: action_only
+  initial_altitude:
+    type: string
+    initial: "5000"
+    mutable_by: action_only
+  climb_altitude:
+    type: string
+    initial: "FL150"
+    mutable_by: action_only
+  waypoint:
+    type: string
+    initial: "BIBAX"
+    mutable_by: action_only
+
+flags:
+  radar_contact:
+    initial: false
+  climb_clearance_issued:
+    initial: false
+  readback_correct:
+    initial: false
+
+states:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 1. Pilot checks in with departure control
+  # ─────────────────────────────────────────────────────────────────────────────
+  INITIAL_CONTACT:
+    role: pilot
+    phase: departure
+    name: "Initial Check-in with Departure"
+    description: "Pilot calls departure control with callsign, passing altitude, and cleared altitude from the SID"
+    expected_pilot_template: "{{callsign}}, passing {{passing_altitude}}, climbing {{initial_altitude}}"
+    frequency_name: "Departure"
+
+    ok_next:
+      - to: MAYDAY_DECLARED
+        trigger: "mayday|pan.pan|pan pan"
+        is_emergency: true
+        interrupt_flow: emergency-v1
+        label: "Emergency — interrupts departure flow"
+      - to: ATC_RADAR_CONTACT
+        trigger: "passing|climbing|departure|with you|check.*in|identified"
+        label: "Pilot checked in with departure"
+
+    bad_next:
+      - to: INITIAL_CONTACT
+        label: "Incomplete check-in — state callsign, passing altitude, and cleared altitude"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 2. Departure establishes radar contact and issues climb clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_RADAR_CONTACT:
+    role: atc
+    phase: departure
+    name: "Departure Establishes Radar Contact"
+    description: "Departure controller identifies the aircraft and issues a new climb clearance with routing"
+    say_template: "{{callsign}}, radar contact, climb flight level {{climb_altitude}}, direct {{waypoint}}"
+    frequency_name: "Departure"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_CLIMB_READBACK
+        label: "Radar contact and climb clearance given — awaiting pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: radar_contact
+            value: true
+          - type: set_flag
+            target: climb_clearance_issued
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 3. Pilot reads back climb clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_CLIMB_READBACK:
+    role: pilot
+    phase: departure
+    name: "Pilot Reads Back Climb Clearance"
+    description: "Pilot must read back cleared climb level, routing waypoint, and own callsign"
+    expected_pilot_template: "Climb flight level {{climb_altitude}}, direct {{waypoint}}, {{callsign}}"
+    frequency_name: "Departure"
+
+    readback_required:
+      - climb_altitude
+      - waypoint
+    readback_mode: simple
+
+    ok_next:
+      - to: MAYDAY_DECLARED
+        trigger: "mayday|pan.pan|pan pan"
+        is_emergency: true
+        interrupt_flow: emergency-v1
+        label: "Emergency during climb readback"
+      - to: ATC_CLIMB_CONFIRMED
+        trigger: ".*"
+        label: "Climb readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_CLIMB_READBACK_INCORRECT
+        label: "Readback missing climb level or waypoint — controller corrects"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 4. ATC corrects incomplete climb readback
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_CLIMB_READBACK_INCORRECT:
+    role: atc
+    phase: departure
+    name: "ATC Corrects Climb Readback"
+    description: "Controller repeats the cleared level and waypoint for the pilot to read back again"
+    say_template: "Negative, {{callsign}}, say again: climb flight level {{climb_altitude}}, direct {{waypoint}}"
+    frequency_name: "Departure"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_CLIMB_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 5. Departure confirms correct readback
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_CLIMB_CONFIRMED:
+    role: atc
+    phase: departure
+    name: "Departure Confirms Readback"
+    description: "Departure control confirms the readback was correct"
+    say_template: "Readback correct, {{callsign}}"
+    frequency_name: "Departure"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: DEPARTURE_COMPLETE
+        label: "Departure phase complete"
+        on_enter_actions:
+          - type: set_flag
+            target: readback_correct
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 6. End state
+  # ─────────────────────────────────────────────────────────────────────────────
+  DEPARTURE_COMPLETE:
+    role: system
+    phase: departure
+    name: "Departure Phase Complete"
+    description: "Initial climb clearance received and read back correctly. Continue climb to {{climb_altitude}}."
+
+    ok_next: []
+    bad_next: []
+    auto_transitions: []
