@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from app.flow_loader import get_flow
 from app.models import CreateSessionRequest, CreateSessionResponse
 from app.session_store import create_session, delete_session, get_session, list_session_ids
+from app.template_renderer import render_template
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/radio", tags=["sessions"])
@@ -19,7 +20,16 @@ def create_radio_session(body: CreateSessionRequest):
         logger.warning("SESSION CREATE  flow=%s  NOT FOUND", body.flow_slug)
         raise HTTPException(status_code=404, detail=str(exc))
 
-    session = create_session(flow)
+    session = create_session(flow, variable_overrides=body.variables)
+
+    # Render the expected pilot phrase for the start state so the frontend
+    # can show the correct hint immediately without a round-trip transmission.
+    start_state = flow.states.get(session.current_state)
+    expected_pilot = render_template(
+        start_state.expected_pilot_template if start_state else None,
+        session.variables,
+    )
+
     logger.info(
         "SESSION CREATE  session=%.8s  flow=%s  start=%s  vars=%s  flags=%s",
         session.session_id,
@@ -34,6 +44,7 @@ def create_radio_session(body: CreateSessionRequest):
         current_state=session.current_state,
         variables=session.variables,
         flags=session.flags,
+        expected_pilot_template=expected_pilot,
     )
 
 

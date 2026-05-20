@@ -53,7 +53,6 @@ states:
     name: "Initial Call to Clearance Delivery"
     description: "Pilot calls clearance delivery with callsign, current ATIS information code, destination, stand number, and request for IFR clearance"
     expected_pilot_template: "{{callsign}}, information {{information}}, IFR to {{destination}}, stand {{stand}}, request clearance"
-    frequency: "121.650"
     frequency_name: "Clearance Delivery"
 
     ok_next:
@@ -78,7 +77,6 @@ states:
     name: "ATC Issues IFR Clearance"
     description: "Controller reads out the full departure clearance: destination, SID name, initial altitude, and squawk code"
     say_template: "{{callsign}}, cleared to {{destination}} via {{sid}} departure, climb initially {{initial_altitude}} feet, squawk {{squawk}}"
-    frequency: "121.650"
     frequency_name: "Clearance Delivery"
 
     ok_next: []
@@ -97,7 +95,6 @@ states:
     name: "Pilot Reads Back Clearance"
     description: "Pilot must read back destination, SID, initial altitude, squawk code, and own callsign"
     expected_pilot_template: "Cleared {{destination}}, {{sid}}, climb initially {{initial_altitude}}, squawk {{squawk}}, {{callsign}}"
-    frequency: "121.650"
     frequency_name: "Clearance Delivery"
 
     readback_required:
@@ -116,11 +113,25 @@ states:
         label: "Readback evaluated by readback evaluator — correct"
 
     bad_next:
-      - to: PILOT_READBACK
+      - to: ATC_READBACK_INCORRECT
         trigger: ".*"
-        label: "Readback missing required elements — controller will repeat clearance"
+        label: "Readback missing required elements — controller corrects pilot"
 
     auto_transitions: []
+
+  ATC_READBACK_INCORRECT:
+    role: atc
+    phase: clearance
+    name: "ATC Corrects Readback"
+    description: "Controller tells the pilot the readback was incomplete and repeats the critical items"
+    say_template: "Negative, {{callsign}}, say again: squawk {{squawk}}, climb initially {{initial_altitude}} feet"
+    frequency_name: "Clearance Delivery"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_READBACK
+        label: "Correction given — pilot to try again"
 
   ATC_READBACK_CORRECT:
     role: atc
@@ -128,7 +139,6 @@ states:
     name: "ATC Confirms Readback"
     description: "Controller confirms the readback was correct and instructs pilot to contact ground for pushback"
     say_template: "Readback correct, {{callsign}}. Contact ground 121.800 when ready for pushback."
-    frequency: "121.650"
     frequency_name: "Clearance Delivery"
 
     ok_next: []

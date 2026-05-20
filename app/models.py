@@ -162,6 +162,9 @@ class RuntimeSession(BaseModel):
 
 class CreateSessionRequest(BaseModel):
     flow_slug: str
+    # Optional overrides applied on top of the YAML defaults at session creation.
+    # Keys must match variable names declared in the flow (unknown keys are ignored).
+    variables: Optional[Dict[str, Any]] = None
 
 
 class CreateSessionResponse(BaseModel):
@@ -170,6 +173,8 @@ class CreateSessionResponse(BaseModel):
     current_state: str
     variables: Dict[str, Any]
     flags: Dict[str, bool]
+    # Pre-rendered expected pilot phrase for the starting state (if any)
+    expected_pilot_template: Optional[str] = None
 
 
 class DecisionRequest(BaseModel):

@@ -15,14 +15,29 @@ from app.models import DecisionFlow, RuntimeSession
 _sessions: Dict[str, RuntimeSession] = {}
 
 
-def create_session(flow: DecisionFlow) -> RuntimeSession:
-    """Create and persist a new session for the given flow."""
+def create_session(
+    flow: DecisionFlow,
+    variable_overrides: dict | None = None,
+) -> RuntimeSession:
+    """Create and persist a new session for the given flow.
+
+    ``variable_overrides`` is applied on top of the YAML initial values.
+    Only keys that are declared in the flow definition are accepted;
+    unknown keys are silently ignored so the frontend can pass the full
+    flight-plan object without pre-filtering.
+    """
     now = datetime.now(timezone.utc).isoformat()
     sid = str(uuid.uuid4())
 
     # Initialise variables and flags from flow definitions
     variables = {k: v.initial for k, v in flow.variables.items()}
     flags = {k: f.initial for k, f in flow.flags.items()}
+
+    # Apply caller-supplied overrides for declared variables only
+    if variable_overrides:
+        for key, value in variable_overrides.items():
+            if key in variables:
+                variables[key] = value
 
     session = RuntimeSession(
         session_id=sid,

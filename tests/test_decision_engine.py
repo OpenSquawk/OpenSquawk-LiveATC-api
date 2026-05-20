@@ -85,6 +85,22 @@ class TestDecisionEngine:
         assert resp.fallback_used is True
         assert "readback_missing" in (resp.fallback_reason or "")
 
+    def test_incorrect_readback_returns_atc_correction(self, clearance_session):
+        process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance=GOOD_INITIAL_CALL),
+        )
+        resp = process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance=BAD_READBACK),
+        )
+        # ATC_READBACK_INCORRECT say_template must be captured and rendered
+        assert resp.controller_say_template is not None
+        assert resp.controller_say_rendered is not None
+        # Rendered output must contain the correct squawk and altitude values
+        assert "2341" in (resp.controller_say_rendered or "")
+        assert "5000" in (resp.controller_say_rendered or "")
+
     def test_session_persisted_after_transmission(self, clearance_session):
         process_transmission(
             clearance_session.session_id,
