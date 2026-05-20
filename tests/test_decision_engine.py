@@ -204,6 +204,25 @@ class TestFlowInterrupt:
         # Advances through ATC_EMERGENCY_RESPONSE (auto) → PILOT_INTENTIONS
         assert resp.next_state_id == "PILOT_INTENTIONS"
 
+    def test_mayday_during_readback_bypasses_readback_check(self, clearance_session):
+        """MAYDAY mid-readback must not be blocked by the readback evaluator."""
+        # Advance to PILOT_READBACK
+        process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance=GOOD_INITIAL_CALL),
+        )
+        # Saying MAYDAY without squawk/altitude should still trigger the emergency,
+        # not be rejected with "Negative, say again squawk …"
+        resp = process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance="MAYDAY MAYDAY MAYDAY"),
+        )
+        assert resp.next_state_id == "PILOT_STATES_EMERGENCY"
+        assert resp.fallback_used is False
+        trace_types = [t.type for t in resp.trace]
+        assert "flow_interrupt" in trace_types
+        assert "emergency_override" in trace_types
+
     def test_mayday_resume_restores_clearance_flow(self, clearance_session):
         """After EMERGENCY_COMPLETE the engine pops back to the clearance flow."""
         # 1. Trigger MAYDAY

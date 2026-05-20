@@ -274,7 +274,14 @@ def process_transmission(
         trace.append(_trace("no_regex_match", f"No trigger matched utterance '{request.pilot_utterance}'"))
 
     # --- Step 7: Readback evaluation (if required) ---
-    if selected_transition is not None and current_state.readback_required and current_state.readback_mode != "none":
+    # Emergency overrides skip readback entirely — MAYDAY / PAN-PAN always takes
+    # priority regardless of whether the required fields are present.
+    if (
+        selected_transition is not None
+        and match_reason != "emergency_override"
+        and current_state.readback_required
+        and current_state.readback_mode != "none"
+    ):
         passed, missing = check_readback(
             request.pilot_utterance,
             current_state.readback_required,
