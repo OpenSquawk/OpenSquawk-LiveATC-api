@@ -1,165 +1,158 @@
-slug: departure-v1
+slug: taxi-in-v1
 schema_version: "2.0"
-name: "Departure — Initial Climb"
-description: "Pilot checks in with departure control after takeoff, receives radar contact and climb clearance, reads it back correctly"
+name: "Taxi-In — Post-Landing Ground Movement"
+description: "Pilot contacts Ground after landing, receives taxi route to stand, reads back, and parks. Reusable for both VFR and IFR arrivals."
 
-start_state: INITIAL_CONTACT
+start_state: CONTACT_GROUND
 end_states:
-  - DEPARTURE_COMPLETE
+  - TAXI_IN_COMPLETE
 
 entry_mode: main
 
 variables:
   callsign:
     type: string
-    initial: "DLH39A"
+    initial: "G-ABCD"
     mutable_by: action_only
-  passing_altitude:
+  runway:
     type: string
-    initial: "1500"
+    initial: "25L"
     mutable_by: action_only
-  initial_altitude:
+  destination:
     type: string
-    initial: "5000"
+    initial: "the apron"
     mutable_by: action_only
-  climb_altitude:
+  taxi_route:
     type: string
-    initial: "FL150"
+    initial: "taxiway Alpha"
     mutable_by: action_only
-  waypoint:
+  crossing_runway:
     type: string
-    initial: "BIBAX"
+    initial: "07"
     mutable_by: action_only
 
 flags:
-  radar_contact:
-    initial: false
-  climb_clearance_issued:
-    initial: false
-  readback_correct:
+  taxi_in_clearance_given:
     initial: false
 
 states:
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 1. Pilot checks in with departure control
+  # 1. Pilot contacts Ground after landing
   # ─────────────────────────────────────────────────────────────────────────────
-  INITIAL_CONTACT:
+  CONTACT_GROUND:
     role: pilot
-    phase: departure
-    name: "Initial Check-in with Departure"
-    description: "Pilot calls departure control with callsign, passing altitude, and cleared altitude from the SID"
-    expected_pilot_template: "{{callsign}}, passing {{passing_altitude}}, climbing {{initial_altitude}}"
-    frequency_name: "Departure"
+    phase: taxi_in
+    name: "Contact Ground After Landing"
+    description: "Pilot calls Ground with callsign, confirms vacated runway, and states parking destination"
+    expected_pilot_template: "{{callsign}}, vacated runway {{runway}}, for {{destination}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
 
     ok_next:
-      - to: ATC_RADAR_CONTACT
-        trigger: "passing|climbing|departure|with you|check.*in|identified"
-        label: "Pilot checked in with departure"
+      - to: ATC_TAXI_IN_ROUTE
+        trigger: "vacat|for.*apron|for.*stand|for.*terminal|for.*parking|parking|stand|apron"
+        label: "Pilot called Ground with vacated report and destination"
 
     bad_next:
-      - to: INITIAL_CONTACT
-        label: "Incomplete check-in — state callsign, passing altitude, and cleared altitude"
+      - to: CONTACT_GROUND
+        label: "Incomplete call — state callsign, vacated runway, and destination"
 
     auto_transitions: []
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 2. Departure establishes radar contact and issues climb clearance
+  # 2. Ground issues taxi-in route
   # ─────────────────────────────────────────────────────────────────────────────
-  ATC_RADAR_CONTACT:
+  ATC_TAXI_IN_ROUTE:
     role: atc
-    phase: departure
-    name: "Departure Establishes Radar Contact"
-    description: "Departure controller identifies the aircraft and issues a new climb clearance with routing"
-    say_template: "{{callsign}}, radar contact, climb {{climb_altitude}}, direct {{waypoint}}"
-    frequency_name: "Departure"
+    phase: taxi_in
+    name: "Ground Issues Taxi-In Route"
+    description: "Ground controller issues taxi route to destination, including any runway crossings"
+    say_template: "{{callsign}}, taxi to {{destination}} via {{taxi_route}}, hold short runway {{crossing_runway}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
 
     ok_next: []
     bad_next: []
     auto_transitions:
-      - to: PILOT_CLIMB_READBACK
-        label: "Radar contact and climb clearance given — awaiting pilot readback"
+      - to: PILOT_TAXI_IN_READBACK
+        label: "Taxi-in route issued — await pilot readback"
         on_enter_actions:
           - type: set_flag
-            target: radar_contact
-            value: true
-          - type: set_flag
-            target: climb_clearance_issued
+            target: taxi_in_clearance_given
             value: true
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 3. Pilot reads back climb clearance
+  # 3. Pilot reads back taxi-in route
   # ─────────────────────────────────────────────────────────────────────────────
-  PILOT_CLIMB_READBACK:
+  PILOT_TAXI_IN_READBACK:
     role: pilot
-    phase: departure
-    name: "Pilot Reads Back Climb Clearance"
-    description: "Pilot must read back cleared climb level, routing waypoint, and own callsign"
-    expected_pilot_template: "Climb {{climb_altitude}}, direct {{waypoint}}, {{callsign}}"
-    frequency_name: "Departure"
+    phase: taxi_in
+    name: "Pilot Reads Back Taxi-In Route"
+    description: "Pilot reads back taxi route and hold-short instruction — crossing runway is mandatory readback"
+    expected_pilot_template: "Taxi to {{destination}} via {{taxi_route}}, hold short runway {{crossing_runway}}, {{callsign}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
 
     readback_required:
-      - climb_altitude
-      - waypoint
+      - crossing_runway
     readback_mode: simple
 
     ok_next:
-      - to: ATC_CLIMB_CONFIRMED
+      - to: ATC_TAXI_IN_CONFIRMED
         trigger: ".*"
-        label: "Climb readback evaluated — correct"
+        label: "Taxi-in readback evaluated — correct"
 
     bad_next:
-      - to: ATC_CLIMB_READBACK_INCORRECT
-        label: "Readback missing climb level or waypoint — controller corrects"
+      - to: ATC_TAXI_IN_READBACK_INCORRECT
+        label: "Readback missing hold-short runway — controller corrects"
 
     auto_transitions: []
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 4. ATC corrects incomplete climb readback
+  # 4. ATC corrects incomplete taxi-in readback
   # ─────────────────────────────────────────────────────────────────────────────
-  ATC_CLIMB_READBACK_INCORRECT:
+  ATC_TAXI_IN_READBACK_INCORRECT:
     role: atc
-    phase: departure
-    name: "ATC Corrects Climb Readback"
-    description: "Controller repeats the cleared level and waypoint for the pilot to read back again"
-    say_template: "Negative, {{callsign}}, say again: climb {{climb_altitude}}, direct {{waypoint}}"
-    frequency_name: "Departure"
+    phase: taxi_in
+    name: "ATC Corrects Taxi-In Readback"
+    description: "Controller repeats the runway hold-short instruction for the pilot"
+    say_template: "Negative, {{callsign}}, say again: hold short runway {{crossing_runway}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
 
     ok_next: []
     bad_next: []
     auto_transitions:
-      - to: PILOT_CLIMB_READBACK
+      - to: PILOT_TAXI_IN_READBACK
         label: "Correction given — pilot to try again"
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 5. Departure confirms correct readback
+  # 5. Ground confirms readback
   # ─────────────────────────────────────────────────────────────────────────────
-  ATC_CLIMB_CONFIRMED:
+  ATC_TAXI_IN_CONFIRMED:
     role: atc
-    phase: departure
-    name: "Departure Confirms Readback"
-    description: "Departure control confirms the readback was correct"
+    phase: taxi_in
+    name: "Ground Confirms Taxi-In Readback"
+    description: "Ground confirms readback correct — pilot proceeds to stand"
     say_template: "Readback correct, {{callsign}}"
-    frequency_name: "Departure"
+    frequency: "121.800"
+    frequency_name: "Ground"
 
     ok_next: []
     bad_next: []
     auto_transitions:
-      - to: DEPARTURE_COMPLETE
-        label: "Departure phase complete"
-        on_enter_actions:
-          - type: set_flag
-            target: readback_correct
-            value: true
+      - to: TAXI_IN_COMPLETE
+        label: "Taxi-in phase complete"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 6. End state
   # ─────────────────────────────────────────────────────────────────────────────
-  DEPARTURE_COMPLETE:
+  TAXI_IN_COMPLETE:
     role: system
-    phase: departure
-    name: "Departure Phase Complete"
-    description: "Initial climb clearance received and read back correctly. Continue climb to {{climb_altitude}}."
+    phase: taxi_in
+    name: "Taxi-In Complete"
+    description: "Post-landing ground movement complete. Proceed to {{destination}} via {{taxi_route}}."
 
     ok_next: []
     bad_next: []

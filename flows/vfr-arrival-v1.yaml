@@ -1,285 +1,296 @@
-slug: tower-v1
+slug: vfr-arrival-v1
 schema_version: "2.0"
-name: "Tower — Lineup and Takeoff"
-description: "Pilot contacts tower holding short, receives line-up-and-wait then takeoff clearance, reads both back, and is handed off to departure control"
+name: "VFR Arrival — Initial Approach Contact"
+description: "VFR pilot makes initial contact with Approach/Radar, receives squawk and QNH, gets joining clearance for the circuit, and is handed off to Tower"
 
 start_state: INITIAL_CONTACT
 end_states:
-  - TOWER_COMPLETE
+  - VFR_ARRIVAL_COMPLETE
 
 entry_mode: main
 
 variables:
   callsign:
     type: string
-    initial: "DLH39A"
+    initial: "G-ABCD"
+    mutable_by: action_only
+  aircraft_type:
+    type: string
+    initial: "C172"
+    mutable_by: action_only
+  origin:
+    type: string
+    initial: "Walden"
+    mutable_by: action_only
+  position:
+    type: string
+    initial: "10 miles north"
+    mutable_by: action_only
+  altitude:
+    type: string
+    initial: "2500"
+    mutable_by: action_only
+  information:
+    type: string
+    initial: "G"
+    mutable_by: action_only
+  assigned_squawk:
+    type: string
+    initial: "3651"
+    mutable_by: action_only
+  qnh:
+    type: string
+    initial: "1013"
     mutable_by: action_only
   runway:
     type: string
     initial: "25L"
     mutable_by: action_only
-  surface_wind:
+  circuit_direction:
     type: string
-    initial: "250/07"
+    initial: "left hand"
     mutable_by: action_only
-  information:
+  join_position:
     type: string
-    initial: "K"
+    initial: "downwind"
     mutable_by: action_only
-  departure_freq:
+  report_point:
     type: string
-    initial: "120.800"
+    initial: "aerodrome in sight"
+    mutable_by: action_only
+  tower_freq:
+    type: string
+    initial: "118.700"
     mutable_by: action_only
 
 flags:
-  lineup_clearance_issued:
+  squawk_assigned:
     initial: false
-  takeoff_clearance_issued:
-    initial: false
-  airborne:
+  joining_cleared:
     initial: false
 
 states:
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 1. Pilot calls tower holding short of active runway
+  # 1. Pilot makes initial call to Approach with full position report
   # ─────────────────────────────────────────────────────────────────────────────
   INITIAL_CONTACT:
     role: pilot
-    phase: tower
-    name: "Initial Contact — Holding Short"
-    description: "Pilot calls tower with callsign, holding-short runway, ATIS information code, and readiness for departure"
-    expected_pilot_template: "{{callsign}}, holding short runway {{runway}}, information {{information}}, ready for departure"
-    frequency_name: "Tower"
+    phase: arrival
+    name: "Initial Contact with Approach"
+    description: "Pilot calls Approach with callsign, aircraft type, VFR origin, position, altitude, intentions, and information code. Order: station, callsign, type, VFR from origin, position, altitude, for landing, information code."
+    expected_pilot_template: "{{callsign}}, {{aircraft_type}}, VFR from {{origin}}, {{position}}, {{altitude}} feet, for landing, information {{information}}"
+    frequency_name: "Approach"
 
     ok_next:
-      - to: ATC_LINEUP_CLEARANCE
-        trigger: "holding.*short|holding short|ready.*departure|ready.*take.*off|information"
-        label: "Pilot reported holding short and ready"
+      - to: ATC_SQUAWK_QNH
+        trigger: "VFR|from|for landing|information|inbound|landing"
+        label: "Pilot gave initial position report with required elements"
 
     bad_next:
       - to: INITIAL_CONTACT
-        label: "Incomplete call — include callsign, runway, information code, and readiness"
+        label: "Incomplete initial call — include callsign, type, VFR from origin, position, altitude, intentions, and information code"
 
     auto_transitions: []
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 2. Tower issues line-up-and-wait
+  # 2. Approach assigns squawk and passes QNH
   # ─────────────────────────────────────────────────────────────────────────────
-  ATC_LINEUP_CLEARANCE:
+  ATC_SQUAWK_QNH:
     role: atc
-    phase: tower
-    name: "Tower Issues Line-Up-and-Wait"
-    description: "Tower instructs the pilot to enter and line up on the runway and wait"
-    say_template: "{{callsign}}, runway {{runway}}, line up and wait"
-    frequency_name: "Tower"
+    phase: arrival
+    name: "Approach Assigns Squawk and QNH"
+    description: "Approach controller assigns a transponder code and passes the QNH"
+    say_template: "{{callsign}}, squawk {{assigned_squawk}}, QNH {{qnh}}"
+    frequency_name: "Approach"
 
     ok_next: []
     bad_next: []
     auto_transitions:
-      - to: PILOT_LINEUP_READBACK
-        label: "Line-up-and-wait issued — awaiting pilot readback"
-        on_enter_actions:
-          - type: set_flag
-            target: lineup_clearance_issued
-            value: true
+      - to: PILOT_SQUAWK_READBACK
+        label: "Squawk and QNH given — await pilot readback"
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 3. Pilot reads back lineup clearance
+  # 3. Pilot reads back squawk and QNH
   # ─────────────────────────────────────────────────────────────────────────────
-  PILOT_LINEUP_READBACK:
+  PILOT_SQUAWK_READBACK:
     role: pilot
-    phase: tower
-    name: "Pilot Reads Back Line-Up-and-Wait"
-    description: "Pilot reads back the runway number to confirm line-up-and-wait instruction"
-    expected_pilot_template: "Line up and wait, runway {{runway}}, {{callsign}}"
-    frequency_name: "Tower"
+    phase: arrival
+    name: "Pilot Reads Back Squawk and QNH"
+    description: "Pilot reads back the assigned transponder code and QNH"
+    expected_pilot_template: "Squawk {{assigned_squawk}}, QNH {{qnh}}, {{callsign}}"
+    frequency_name: "Approach"
 
     readback_required:
-      - runway
+      - assigned_squawk
+      - qnh
     readback_mode: simple
 
     ok_next:
-      - to: ATC_TAKEOFF_CLEARANCE
+      - to: ATC_IDENTIFIED_JOINING
         trigger: ".*"
-        label: "Lineup readback evaluated — correct"
+        label: "Squawk readback evaluated — correct"
 
     bad_next:
-      - to: ATC_LINEUP_READBACK_INCORRECT
-        label: "Readback missing runway designation — controller corrects"
+      - to: ATC_SQUAWK_READBACK_INCORRECT
+        label: "Readback missing squawk or QNH — controller corrects"
 
     auto_transitions: []
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 4. ATC corrects incomplete lineup readback
+  # 4. ATC corrects incomplete squawk/QNH readback
   # ─────────────────────────────────────────────────────────────────────────────
-  ATC_LINEUP_READBACK_INCORRECT:
+  ATC_SQUAWK_READBACK_INCORRECT:
     role: atc
-    phase: tower
-    name: "ATC Corrects Lineup Readback"
-    description: "Controller repeats the runway number for the pilot to include in the readback"
-    say_template: "Negative, {{callsign}}, say again: runway {{runway}}, line up and wait"
-    frequency_name: "Tower"
+    phase: arrival
+    name: "ATC Corrects Squawk Readback"
+    description: "Controller repeats the squawk code and QNH for the pilot to read back correctly"
+    say_template: "Negative, {{callsign}}, say again: squawk {{assigned_squawk}}, QNH {{qnh}}"
+    frequency_name: "Approach"
 
     ok_next: []
     bad_next: []
     auto_transitions:
-      - to: PILOT_LINEUP_READBACK
+      - to: PILOT_SQUAWK_READBACK
         label: "Correction given — pilot to try again"
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 5. Tower issues takeoff clearance
+  # 5. Approach identifies aircraft and issues joining clearance
   # ─────────────────────────────────────────────────────────────────────────────
-  ATC_TAKEOFF_CLEARANCE:
+  ATC_IDENTIFIED_JOINING:
     role: atc
-    phase: tower
-    name: "Tower Issues Takeoff Clearance"
-    description: "Tower clears the aircraft for takeoff with current surface wind and active runway"
-    say_template: "{{callsign}}, wind {{surface_wind}}, runway {{runway}}, cleared for takeoff"
-    frequency_name: "Tower"
+    phase: arrival
+    name: "Approach Issues Joining Clearance"
+    description: "Approach confirms radar identification and issues joining clearance specifying runway, circuit direction, join position, and reporting point"
+    say_template: "{{callsign}}, identified, runway {{runway}}, join {{circuit_direction}} {{join_position}}, report {{report_point}}"
+    frequency_name: "Approach"
 
     ok_next: []
     bad_next: []
     auto_transitions:
-      - to: PILOT_TAKEOFF_READBACK
-        label: "Takeoff clearance given — awaiting pilot readback"
+      - to: PILOT_JOINING_READBACK
+        label: "Joining clearance issued — await pilot readback"
         on_enter_actions:
           - type: set_flag
-            target: takeoff_clearance_issued
+            target: squawk_assigned
             value: true
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 6. Pilot reads back takeoff clearance
+  # 6. Pilot reads back joining clearance
   # ─────────────────────────────────────────────────────────────────────────────
-  PILOT_TAKEOFF_READBACK:
+  PILOT_JOINING_READBACK:
     role: pilot
-    phase: tower
-    name: "Pilot Reads Back Takeoff Clearance"
-    description: "Pilot must read back the runway and cleared-for-takeoff — callsign required"
-    expected_pilot_template: "Cleared for takeoff, runway {{runway}}, {{callsign}}"
-    frequency_name: "Tower"
+    phase: arrival
+    name: "Pilot Reads Back Joining Clearance"
+    description: "Pilot reads back the circuit direction, join position, and runway — confirms with callsign"
+    expected_pilot_template: "Join {{circuit_direction}} {{join_position}} runway {{runway}}, wilco, {{callsign}}"
+    frequency_name: "Approach"
 
     readback_required:
       - runway
+      - circuit_direction
     readback_mode: simple
 
     ok_next:
-      - to: ATC_AIRBORNE_HANDOFF
+      - to: ATC_TOWER_HANDOFF
         trigger: ".*"
-        label: "Takeoff readback evaluated — correct"
+        label: "Joining readback evaluated — correct"
 
     bad_next:
-      - to: ATC_TAKEOFF_READBACK_INCORRECT
-        label: "Readback missing runway — controller corrects"
+      - to: ATC_JOINING_READBACK_INCORRECT
+        label: "Readback missing runway or circuit direction — controller corrects"
 
     auto_transitions: []
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 7. ATC corrects incomplete takeoff readback
+  # 7. ATC corrects incomplete joining readback
   # ─────────────────────────────────────────────────────────────────────────────
-  ATC_TAKEOFF_READBACK_INCORRECT:
+  ATC_JOINING_READBACK_INCORRECT:
     role: atc
-    phase: tower
-    name: "ATC Corrects Takeoff Readback"
-    description: "Controller repeats the runway number for the takeoff clearance readback"
-    say_template: "Negative, {{callsign}}, say again: runway {{runway}}, cleared for takeoff"
-    frequency_name: "Tower"
+    phase: arrival
+    name: "ATC Corrects Joining Readback"
+    description: "Controller repeats circuit direction and runway for the pilot"
+    say_template: "Negative, {{callsign}}, say again: join {{circuit_direction}} {{join_position}} runway {{runway}}"
+    frequency_name: "Approach"
 
     ok_next: []
     bad_next: []
     auto_transitions:
-      - to: PILOT_TAKEOFF_READBACK
+      - to: PILOT_JOINING_READBACK
         label: "Correction given — pilot to try again"
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 8. Tower hands off to departure control (airborne)
+  # 8. Approach hands pilot off to Tower
   # ─────────────────────────────────────────────────────────────────────────────
-  ATC_AIRBORNE_HANDOFF:
+  ATC_TOWER_HANDOFF:
     role: atc
-    phase: tower
-    name: "Tower Hands Off to Departure"
-    description: "After takeoff, tower instructs the pilot to contact departure control on the assigned frequency"
-    say_template: "{{callsign}}, contact departure {{departure_freq}}"
-    frequency_name: "Tower"
+    phase: arrival
+    name: "Approach Hands Off to Tower"
+    description: "Approach controller instructs the pilot to contact Tower on the assigned frequency"
+    say_template: "{{callsign}}, contact tower {{tower_freq}}"
+    frequency_name: "Approach"
 
     ok_next: []
     bad_next: []
     auto_transitions:
-      - to: PILOT_HANDOFF_READBACK
-        label: "Handoff instruction given — awaiting pilot readback"
+      - to: PILOT_TOWER_FREQ_READBACK
+        label: "Tower handoff given — await pilot readback"
         on_enter_actions:
           - type: set_flag
-            target: airborne
+            target: joining_cleared
             value: true
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 9. Pilot reads back departure frequency
+  # 9. Pilot reads back tower frequency
   # ─────────────────────────────────────────────────────────────────────────────
-  PILOT_HANDOFF_READBACK:
+  PILOT_TOWER_FREQ_READBACK:
     role: pilot
-    phase: tower
-    name: "Pilot Reads Back Departure Frequency"
-    description: "Pilot reads back the departure frequency and own callsign to confirm frequency change"
-    expected_pilot_template: "{{departure_freq}}, {{callsign}}"
-    frequency_name: "Tower"
+    phase: arrival
+    name: "Pilot Reads Back Tower Frequency"
+    description: "Pilot reads back the tower frequency and own callsign to confirm frequency change"
+    expected_pilot_template: "{{tower_freq}}, {{callsign}}"
+    frequency_name: "Approach"
 
     readback_required:
-      - departure_freq
+      - tower_freq
     readback_mode: simple
 
     ok_next:
-      - to: ATC_HANDOFF_CONFIRMED
+      - to: VFR_ARRIVAL_COMPLETE
         trigger: ".*"
-        label: "Departure frequency readback evaluated — correct"
+        label: "Frequency readback evaluated — correct"
 
     bad_next:
-      - to: ATC_HANDOFF_READBACK_INCORRECT
-        label: "Readback missing departure frequency — controller corrects"
+      - to: ATC_TOWER_FREQ_READBACK_INCORRECT
+        label: "Readback missing tower frequency — controller corrects"
 
     auto_transitions: []
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 10. ATC corrects incomplete frequency readback
   # ─────────────────────────────────────────────────────────────────────────────
-  ATC_HANDOFF_READBACK_INCORRECT:
+  ATC_TOWER_FREQ_READBACK_INCORRECT:
     role: atc
-    phase: tower
-    name: "ATC Corrects Frequency Readback"
-    description: "Controller repeats the departure frequency for the pilot"
-    say_template: "Negative, {{callsign}}, departure on {{departure_freq}}"
-    frequency_name: "Tower"
+    phase: arrival
+    name: "ATC Corrects Tower Frequency Readback"
+    description: "Controller repeats the tower frequency for the pilot"
+    say_template: "Negative, {{callsign}}, tower on {{tower_freq}}"
+    frequency_name: "Approach"
 
     ok_next: []
     bad_next: []
     auto_transitions:
-      - to: PILOT_HANDOFF_READBACK
+      - to: PILOT_TOWER_FREQ_READBACK
         label: "Correction given — pilot to try again"
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 11. Tower confirms correct readback
+  # 11. End state — switching to Tower
   # ─────────────────────────────────────────────────────────────────────────────
-  ATC_HANDOFF_CONFIRMED:
-    role: atc
-    phase: tower
-    name: "Tower Confirms Departure Handoff"
-    description: "Tower acknowledges correct frequency readback"
-    say_template: "Readback correct, {{callsign}}, good day"
-    frequency_name: "Tower"
-
-    ok_next: []
-    bad_next: []
-    auto_transitions:
-      - to: TOWER_COMPLETE
-        label: "Tower phase complete — pilot switching to departure"
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # 12. End state
-  # ─────────────────────────────────────────────────────────────────────────────
-  TOWER_COMPLETE:
+  VFR_ARRIVAL_COMPLETE:
     role: system
-    phase: tower
-    name: "Tower Phase Complete"
-    description: "Takeoff and departure handoff complete. Switch to departure on {{departure_freq}}."
+    phase: arrival
+    name: "VFR Arrival Phase Complete"
+    description: "Joining clearance received. Switch to tower {{tower_freq}} for circuit and landing."
 
     ok_next: []
     bad_next: []

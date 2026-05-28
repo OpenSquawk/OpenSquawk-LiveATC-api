@@ -1,0 +1,405 @@
+slug: vfr-circuit-landing-v1
+schema_version: "2.0"
+name: "VFR Circuit and Landing"
+description: "VFR pilot contacts Tower on arrival, flies the traffic circuit, receives landing clearance, lands, vacates the runway, and is handed off to Ground"
+
+start_state: INITIAL_TOWER_CONTACT
+end_states:
+  - CIRCUIT_LANDING_COMPLETE
+
+entry_mode: main
+
+variables:
+  callsign:
+    type: string
+    initial: "G-ABCD"
+    mutable_by: action_only
+  runway:
+    type: string
+    initial: "25L"
+    mutable_by: action_only
+  circuit_direction:
+    type: string
+    initial: "left hand"
+    mutable_by: action_only
+  qnh:
+    type: string
+    initial: "1013"
+    mutable_by: action_only
+  surface_wind:
+    type: string
+    initial: "250/08"
+    mutable_by: action_only
+  sequence_number:
+    type: string
+    initial: "2"
+    mutable_by: action_only
+  preceding_traffic:
+    type: string
+    initial: "Cherokee on base"
+    mutable_by: action_only
+  ground_freq:
+    type: string
+    initial: "121.800"
+    mutable_by: action_only
+  parking_instruction:
+    type: string
+    initial: "the apron via taxiway Alpha"
+    mutable_by: action_only
+
+flags:
+  circuit_info_given:
+    initial: false
+  landing_cleared:
+    initial: false
+  runway_vacated:
+    initial: false
+
+states:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 1. Pilot contacts Tower after frequency change from Approach
+  # ─────────────────────────────────────────────────────────────────────────────
+  INITIAL_TOWER_CONTACT:
+    role: pilot
+    phase: circuit
+    name: "Initial Tower Contact"
+    description: "Pilot calls Tower with callsign and position, requesting circuit join for landing"
+    expected_pilot_template: "{{callsign}}, joining {{circuit_direction}} circuit runway {{runway}}, for landing"
+    frequency_name: "Tower"
+
+    ok_next:
+      - to: ATC_CIRCUIT_INFO
+        trigger: "joining|circuit|inbound|landing|for landing"
+        label: "Pilot called Tower and stated intentions"
+
+    bad_next:
+      - to: INITIAL_TOWER_CONTACT
+        label: "Incomplete call — state callsign and intentions for landing"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 2. Tower confirms circuit information
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_CIRCUIT_INFO:
+    role: atc
+    phase: circuit
+    name: "Tower Issues Circuit Information"
+    description: "Tower confirms runway, circuit direction, QNH, and instructs pilot to report downwind"
+    say_template: "{{callsign}}, runway {{runway}}, {{circuit_direction}} circuit, QNH {{qnh}}, report downwind"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_CIRCUIT_READBACK
+        label: "Circuit information issued — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: circuit_info_given
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 3. Pilot reads back circuit information
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_CIRCUIT_READBACK:
+    role: pilot
+    phase: circuit
+    name: "Pilot Reads Back Circuit Information"
+    description: "Pilot reads back runway and QNH, confirms wilco for downwind report"
+    expected_pilot_template: "Runway {{runway}}, {{circuit_direction}} circuit, QNH {{qnh}}, wilco, {{callsign}}"
+    frequency_name: "Tower"
+
+    readback_required:
+      - runway
+      - qnh
+    readback_mode: simple
+
+    ok_next:
+      - to: REPORT_DOWNWIND
+        trigger: ".*"
+        label: "Circuit readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_CIRCUIT_READBACK_INCORRECT
+        label: "Readback missing runway or QNH — controller corrects"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 4. ATC corrects incomplete circuit readback
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_CIRCUIT_READBACK_INCORRECT:
+    role: atc
+    phase: circuit
+    name: "ATC Corrects Circuit Readback"
+    description: "Controller repeats runway and QNH for the pilot"
+    say_template: "Negative, {{callsign}}, say again: runway {{runway}}, QNH {{qnh}}"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_CIRCUIT_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 5. Pilot reports downwind
+  # ─────────────────────────────────────────────────────────────────────────────
+  REPORT_DOWNWIND:
+    role: pilot
+    phase: circuit
+    name: "Downwind Report"
+    description: "Pilot reports downwind position in the traffic circuit for the active runway"
+    expected_pilot_template: "{{callsign}}, downwind runway {{runway}}"
+    frequency_name: "Tower"
+
+    ok_next:
+      - to: ATC_DOWNWIND_SEQUENCING
+        trigger: "downwind|down.*wind"
+        label: "Pilot reported downwind"
+
+    bad_next:
+      - to: REPORT_DOWNWIND
+        label: "Incomplete downwind call — include callsign and downwind position"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 6. Tower sequences the aircraft
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_DOWNWIND_SEQUENCING:
+    role: atc
+    phase: circuit
+    name: "Tower Issues Sequencing"
+    description: "Tower gives the traffic sequence number, points out preceding traffic, and instructs pilot to report final"
+    say_template: "{{callsign}}, number {{sequence_number}}, follow {{preceding_traffic}}, report final"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_SEQUENCING_READBACK
+        label: "Sequencing information given — await pilot acknowledgement"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 7. Pilot acknowledges sequencing
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_SEQUENCING_READBACK:
+    role: pilot
+    phase: circuit
+    name: "Pilot Acknowledges Sequencing"
+    description: "Pilot acknowledges sequence number, confirms traffic in sight, and confirms will report final"
+    expected_pilot_template: "Number {{sequence_number}}, traffic in sight, wilco, {{callsign}}"
+    frequency_name: "Tower"
+
+    ok_next:
+      - to: REPORT_FINAL
+        trigger: ".*"
+        label: "Sequencing acknowledged — pilot proceeding to final"
+
+    bad_next: []
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 8. Pilot reports final
+  # ─────────────────────────────────────────────────────────────────────────────
+  REPORT_FINAL:
+    role: pilot
+    phase: circuit
+    name: "Final Report"
+    description: "Pilot reports turning final for the active runway"
+    expected_pilot_template: "{{callsign}}, final runway {{runway}}"
+    frequency_name: "Tower"
+
+    ok_next:
+      - to: ATC_LANDING_CLEARANCE
+        trigger: "final|finals"
+        label: "Pilot reported final"
+
+    bad_next:
+      - to: REPORT_FINAL
+        label: "Incomplete final call — include callsign and final runway"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 9. Tower issues landing clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_LANDING_CLEARANCE:
+    role: atc
+    phase: circuit
+    name: "Tower Issues Landing Clearance"
+    description: "Tower clears the aircraft to land, passing current surface wind"
+    say_template: "{{callsign}}, runway {{runway}}, cleared to land, wind {{surface_wind}}"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_LANDING_READBACK
+        label: "Landing clearance issued — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: landing_cleared
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 10. Pilot reads back landing clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_LANDING_READBACK:
+    role: pilot
+    phase: circuit
+    name: "Pilot Reads Back Landing Clearance"
+    description: "Pilot reads back cleared to land and runway number — mandatory readback per ICAO"
+    expected_pilot_template: "Cleared to land, runway {{runway}}, {{callsign}}"
+    frequency_name: "Tower"
+
+    readback_required:
+      - runway
+    readback_mode: simple
+
+    ok_next:
+      - to: PILOT_RUNWAY_VACATED
+        trigger: ".*"
+        label: "Landing readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_LANDING_READBACK_INCORRECT
+        label: "Readback missing runway — controller corrects"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 11. ATC corrects incomplete landing readback
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_LANDING_READBACK_INCORRECT:
+    role: atc
+    phase: circuit
+    name: "ATC Corrects Landing Readback"
+    description: "Controller repeats runway number for the landing clearance readback"
+    say_template: "Negative, {{callsign}}, say again: runway {{runway}}, cleared to land"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_LANDING_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 12. Pilot reports runway vacated
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_RUNWAY_VACATED:
+    role: pilot
+    phase: circuit
+    name: "Pilot Reports Runway Vacated"
+    description: "After landing, pilot reports the runway is vacated once clear of all runway holding positions"
+    expected_pilot_template: "{{callsign}}, runway vacated"
+    frequency_name: "Tower"
+
+    ok_next:
+      - to: ATC_VACATED_RESPONSE
+        trigger: "vacat|clear.*runway|runway.*clear|off.*runway"
+        label: "Pilot reported runway vacated"
+
+    bad_next:
+      - to: PILOT_RUNWAY_VACATED
+        label: "Incomplete vacated call — state callsign and runway vacated"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 13. Tower acknowledges vacated and hands off to Ground
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_VACATED_RESPONSE:
+    role: atc
+    phase: circuit
+    name: "Tower Acknowledges Vacated and Issues Taxi-In"
+    description: "Tower confirms runway vacated, gives initial taxi-in destination, and hands off to Ground"
+    say_template: "{{callsign}}, taxi to {{parking_instruction}}, contact ground {{ground_freq}}"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_VACATED_READBACK
+        label: "Vacated response and taxi instruction issued — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: runway_vacated
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 14. Pilot reads back taxi-in instruction and ground frequency
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_VACATED_READBACK:
+    role: pilot
+    phase: circuit
+    name: "Pilot Reads Back Taxi-In and Ground Frequency"
+    description: "Pilot reads back taxi destination and ground frequency to confirm handoff"
+    expected_pilot_template: "Taxi to {{parking_instruction}}, {{ground_freq}}, {{callsign}}"
+    frequency_name: "Tower"
+
+    readback_required:
+      - ground_freq
+    readback_mode: simple
+
+    ok_next:
+      - to: ATC_VACATED_CONFIRMED
+        trigger: ".*"
+        label: "Taxi-in readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_VACATED_READBACK_INCORRECT
+        label: "Readback missing ground frequency — controller corrects"
+
+    auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 15. ATC corrects incomplete vacated readback
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_VACATED_READBACK_INCORRECT:
+    role: atc
+    phase: circuit
+    name: "ATC Corrects Vacated Readback"
+    description: "Controller repeats the ground frequency for the pilot"
+    say_template: "Negative, {{callsign}}, ground on {{ground_freq}}"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_VACATED_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 16. Tower confirms and says goodbye
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_VACATED_CONFIRMED:
+    role: atc
+    phase: circuit
+    name: "Tower Confirms Readback"
+    description: "Tower confirms readback correct and bids farewell"
+    say_template: "Readback correct, {{callsign}}, good day"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: CIRCUIT_LANDING_COMPLETE
+        label: "Circuit and landing phase complete"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 17. End state
+  # ─────────────────────────────────────────────────────────────────────────────
+  CIRCUIT_LANDING_COMPLETE:
+    role: system
+    phase: circuit
+    name: "Circuit and Landing Complete"
+    description: "VFR circuit and landing complete. Switch to ground {{ground_freq}} for taxi to stand."
+
+    ok_next: []
+    bad_next: []
+    auto_transitions: []

@@ -93,6 +93,7 @@ states:
     frequency_name: "Clearance Delivery"
 
     readback_required:
+      - sid
       - squawk
       - initial_altitude
     readback_mode: simple
