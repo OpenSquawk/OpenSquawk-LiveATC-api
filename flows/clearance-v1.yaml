@@ -61,10 +61,24 @@ states:
         label: "Pilot called clearance delivery with required elements"
 
     bad_next:
-      - to: INITIAL_CALL
-        label: "Incomplete initial call — include callsign, information code, destination, stand, and clearance request"
+      - to: ATC_INITIAL_CALL_INCORRECT
+        label: "Incomplete initial call — controller prompts for required elements"
 
     auto_transitions: []
+
+  ATC_INITIAL_CALL_INCORRECT:
+    role: atc
+    phase: clearance
+    name: "ATC Prompts for Correct Initial Call"
+    description: "Controller asks the pilot to include all required elements: callsign, information code, destination, stand, and clearance request"
+    say_template: "{{callsign}}, say again with information code, destination, stand number, and clearance request"
+    frequency_name: "Clearance Delivery"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: INITIAL_CALL
+        label: "Prompt given — pilot to retry initial call"
 
   ATC_ISSUES_CLEARANCE:
     role: atc

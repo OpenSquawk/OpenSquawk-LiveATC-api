@@ -58,10 +58,24 @@ states:
         label: "Pilot checked in with departure"
 
     bad_next:
-      - to: INITIAL_CONTACT
-        label: "Incomplete check-in — state callsign, passing altitude, and cleared altitude"
+      - to: ATC_INITIAL_CONTACT_INCORRECT
+        label: "Incomplete check-in — controller prompts for passing altitude and cleared level"
 
     auto_transitions: []
+
+  ATC_INITIAL_CONTACT_INCORRECT:
+    role: atc
+    phase: departure
+    name: "ATC Prompts for Correct Check-in"
+    description: "Controller asks the pilot to report callsign, passing altitude, and cleared climb level"
+    say_template: "{{callsign}}, say again, pass your callsign, passing altitude, and cleared level"
+    frequency_name: "Departure"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: INITIAL_CONTACT
+        label: "Prompt given — pilot to retry check-in"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 2. Departure establishes radar contact and issues climb clearance

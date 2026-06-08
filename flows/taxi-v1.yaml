@@ -75,10 +75,25 @@ states:
         label: "Pilot requested startup with required elements"
 
     bad_next:
-      - to: REQUEST_STARTUP
-        label: "Incomplete call — include callsign, stand, information code, and startup request"
+      - to: ATC_REQUEST_STARTUP_INCORRECT
+        label: "Incomplete call — controller prompts for callsign, stand, information, and startup request"
 
     auto_transitions: []
+
+  ATC_REQUEST_STARTUP_INCORRECT:
+    role: atc
+    phase: taxi
+    name: "ATC Prompts for Startup Request"
+    description: "Controller asks the pilot to include all required elements in the startup request"
+    say_template: "{{callsign}}, say again with stand number, information code, and startup request"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: REQUEST_STARTUP
+        label: "Prompt given — pilot to retry"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 2. Ground approves startup and gives QNH
@@ -165,10 +180,25 @@ states:
         label: "Pilot requested pushback"
 
     bad_next:
-      - to: REQUEST_PUSHBACK
-        label: "Incomplete call — state callsign, stand, and request pushback"
+      - to: ATC_REQUEST_PUSHBACK_INCORRECT
+        label: "Incomplete call — controller prompts for callsign, stand, and pushback request"
 
     auto_transitions: []
+
+  ATC_REQUEST_PUSHBACK_INCORRECT:
+    role: atc
+    phase: taxi
+    name: "ATC Prompts for Pushback Request"
+    description: "Controller asks the pilot to include stand number and pushback request"
+    say_template: "{{callsign}}, say again with stand number and pushback request"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: REQUEST_PUSHBACK
+        label: "Prompt given — pilot to retry"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 6. Ground issues pushback clearance with facing direction
@@ -255,10 +285,25 @@ states:
         label: "Pilot requested taxi"
 
     bad_next:
-      - to: REQUEST_TAXI
-        label: "Incomplete taxi request — state callsign, ready for taxi, and destination runway"
+      - to: ATC_REQUEST_TAXI_INCORRECT
+        label: "Incomplete taxi request — controller prompts for callsign, ready for taxi, and runway"
 
     auto_transitions: []
+
+  ATC_REQUEST_TAXI_INCORRECT:
+    role: atc
+    phase: taxi
+    name: "ATC Prompts for Taxi Request"
+    description: "Controller asks the pilot to include callsign, readiness for taxi, and destination runway"
+    say_template: "{{callsign}}, say again, ready for taxi to runway {{runway}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: REQUEST_TAXI
+        label: "Prompt given — pilot to retry"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 10. Ground issues taxi instructions

@@ -88,10 +88,24 @@ states:
         label: "Pilot gave initial position report with required elements"
 
     bad_next:
-      - to: INITIAL_CONTACT
-        label: "Incomplete initial call — include callsign, type, VFR from origin, position, altitude, intentions, and information code"
+      - to: ATC_INITIAL_CONTACT_INCORRECT
+        label: "Incomplete call — controller prompts for callsign, type, VFR origin, position, altitude, intentions, and information"
 
     auto_transitions: []
+
+  ATC_INITIAL_CONTACT_INCORRECT:
+    role: atc
+    phase: arrival
+    name: "ATC Prompts for Full Position Report"
+    description: "Controller asks the pilot to give a full initial call including type, VFR from origin, position, altitude, intentions, and information code"
+    say_template: "{{callsign}}, say again, pass callsign, type, VFR from where, position, altitude, intentions, and information code"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: INITIAL_CONTACT
+        label: "Prompt given — pilot to retry"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 2. Approach assigns squawk and passes QNH

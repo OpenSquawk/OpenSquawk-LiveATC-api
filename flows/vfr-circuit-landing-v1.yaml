@@ -74,10 +74,24 @@ states:
         label: "Pilot called Tower and stated intentions"
 
     bad_next:
-      - to: INITIAL_TOWER_CONTACT
-        label: "Incomplete call — state callsign and intentions for landing"
+      - to: ATC_INITIAL_TOWER_CONTACT_INCORRECT
+        label: "Incomplete call — controller prompts for callsign and landing intention"
 
     auto_transitions: []
+
+  ATC_INITIAL_TOWER_CONTACT_INCORRECT:
+    role: atc
+    phase: circuit
+    name: "ATC Prompts for Correct Tower Contact"
+    description: "Controller asks the pilot to report callsign, joining circuit, and intention to land"
+    say_template: "{{callsign}}, say again, report joining circuit runway {{runway}} for landing"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: INITIAL_TOWER_CONTACT
+        label: "Prompt given — pilot to retry"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 2. Tower confirms circuit information
@@ -161,10 +175,24 @@ states:
         label: "Pilot reported downwind"
 
     bad_next:
-      - to: REPORT_DOWNWIND
-        label: "Incomplete downwind call — include callsign and downwind position"
+      - to: ATC_DOWNWIND_INCORRECT
+        label: "Incomplete downwind call — controller prompts"
 
     auto_transitions: []
+
+  ATC_DOWNWIND_INCORRECT:
+    role: atc
+    phase: circuit
+    name: "ATC Prompts for Downwind Report"
+    description: "Controller asks the pilot to report downwind with callsign and runway"
+    say_template: "{{callsign}}, say again, report downwind runway {{runway}}"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: REPORT_DOWNWIND
+        label: "Prompt given — pilot to retry"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 6. Tower sequences the aircraft
@@ -219,10 +247,24 @@ states:
         label: "Pilot reported final"
 
     bad_next:
-      - to: REPORT_FINAL
-        label: "Incomplete final call — include callsign and final runway"
+      - to: ATC_FINAL_INCORRECT
+        label: "Incomplete final call — controller prompts"
 
     auto_transitions: []
+
+  ATC_FINAL_INCORRECT:
+    role: atc
+    phase: circuit
+    name: "ATC Prompts for Final Report"
+    description: "Controller asks the pilot to report final with callsign and runway"
+    say_template: "{{callsign}}, say again, report final runway {{runway}}"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: REPORT_FINAL
+        label: "Prompt given — pilot to retry"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 9. Tower issues landing clearance
@@ -305,10 +347,24 @@ states:
         label: "Pilot reported runway vacated"
 
     bad_next:
-      - to: PILOT_RUNWAY_VACATED
-        label: "Incomplete vacated call — state callsign and runway vacated"
+      - to: ATC_RUNWAY_VACATED_INCORRECT
+        label: "Incomplete vacated call — controller prompts"
 
     auto_transitions: []
+
+  ATC_RUNWAY_VACATED_INCORRECT:
+    role: atc
+    phase: circuit
+    name: "ATC Prompts for Runway Vacated Report"
+    description: "Controller asks the pilot to report runway vacated"
+    say_template: "{{callsign}}, say again, report runway vacated"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_RUNWAY_VACATED
+        label: "Prompt given — pilot to retry"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 13. Tower acknowledges vacated and hands off to Ground

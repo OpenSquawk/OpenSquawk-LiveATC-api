@@ -58,10 +58,24 @@ states:
         label: "Pilot reported holding short and ready"
 
     bad_next:
-      - to: INITIAL_CONTACT
-        label: "Incomplete call — include callsign, runway, information code, and readiness"
+      - to: ATC_INITIAL_CONTACT_INCORRECT
+        label: "Incomplete call — controller prompts for holding-short report and readiness"
 
     auto_transitions: []
+
+  ATC_INITIAL_CONTACT_INCORRECT:
+    role: atc
+    phase: tower
+    name: "ATC Prompts for Correct Initial Call"
+    description: "Controller asks the pilot to report holding short of the runway with information code and readiness for departure"
+    say_template: "{{callsign}}, say again, report holding short runway {{runway}}, with information and ready for departure"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: INITIAL_CONTACT
+        label: "Prompt given — pilot to retry"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 2. Tower issues line-up-and-wait

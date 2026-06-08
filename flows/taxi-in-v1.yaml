@@ -55,10 +55,25 @@ states:
         label: "Pilot called Ground with vacated report and destination"
 
     bad_next:
-      - to: CONTACT_GROUND
-        label: "Incomplete call — state callsign, vacated runway, and destination"
+      - to: ATC_CONTACT_GROUND_INCORRECT
+        label: "Incomplete call — controller prompts for callsign, vacated runway, and destination"
 
     auto_transitions: []
+
+  ATC_CONTACT_GROUND_INCORRECT:
+    role: atc
+    phase: taxi_in
+    name: "ATC Prompts for Correct Ground Contact"
+    description: "Controller asks the pilot to report callsign, vacated runway, and parking destination"
+    say_template: "{{callsign}}, say again, report vacated runway and destination"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: CONTACT_GROUND
+        label: "Prompt given — pilot to retry"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 2. Ground issues taxi-in route

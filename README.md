@@ -88,7 +88,7 @@ poetry install --only main --no-interaction --no-ansi
 Start Command:
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port ${PORT:-3000}
+uvicorn main:app --reload --host 0.0.0.0 --port ${PORT:-3000}
 ```
 
 Bei Railway, Render, Fly, Coolify oder ähnlichen Hosts:
