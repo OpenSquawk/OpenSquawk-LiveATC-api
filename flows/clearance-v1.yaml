@@ -7,6 +7,9 @@ start_state: INITIAL_CALL
 end_states:
   - CLEARANCE_COMPLETE
 
+# Automatically chain to the ground / taxi flow once the clearance is complete.
+next_flow: taxi-v1
+
 entry_mode: main
 
 variables:
@@ -38,6 +41,10 @@ variables:
     type: string
     initial: "2341"
     mutable_by: action_only
+  ground_freq:
+    type: string
+    initial: "121.800"
+    mutable_by: action_only
 
 flags:
   clearance_issued:
@@ -51,7 +58,7 @@ states:
     role: pilot
     phase: clearance
     name: "Initial Call to Clearance Delivery"
-    description: "Pilot calls clearance delivery with callsign, current ATIS information code, destination, stand number, and request for IFR clearance"
+    description: "Pilot calls clearance delivery with callsign, ATIS information code, destination, stand number, and request for IFR clearance"
     expected_pilot_template: "{{callsign}}, information {{information}}, IFR to {{destination}}, stand {{stand}}, request clearance"
     frequency_name: "Clearance Delivery"
 
@@ -129,7 +136,7 @@ states:
     phase: clearance
     name: "ATC Corrects Readback"
     description: "Controller tells the pilot the readback was incomplete and repeats the critical items"
-    say_template: "Negative, {{callsign}}, say again: squawk {{squawk}}, climb initially {{initial_altitude}} feet"
+    say_template: "Negative, {{callsign}}, say again: {{sid}}, squawk {{squawk}}, climb initially {{initial_altitude}} feet"
     frequency_name: "Clearance Delivery"
 
     ok_next: []
@@ -143,7 +150,7 @@ states:
     phase: clearance
     name: "ATC Confirms Readback"
     description: "Controller confirms the readback was correct and instructs pilot to contact ground for pushback"
-    say_template: "Readback correct, {{callsign}}. Contact ground 121.800 when ready for pushback."
+    say_template: "Readback correct, {{callsign}}. Contact ground {{ground_freq}} when ready for pushback."
     frequency_name: "Clearance Delivery"
 
     ok_next: []
@@ -162,7 +169,7 @@ states:
     role: system
     phase: clearance
     name: "Clearance Granted"
-    description: "IFR clearance phase complete. Switch to ground 121.800 for pushback."
+    description: "IFR clearance phase complete. Switch to ground {{ground_freq}} for pushback."
 
     ok_next: []
     bad_next: []

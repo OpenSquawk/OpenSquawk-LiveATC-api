@@ -7,6 +7,9 @@ start_state: REQUEST_STARTUP
 end_states:
   - TAXI_COMPLETE
 
+# After taxi completes, pilot holds short and contacts tower for departure.
+next_flow: tower-v1
+
 entry_mode: main
 
 variables:

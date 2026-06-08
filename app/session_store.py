@@ -18,6 +18,7 @@ _sessions: Dict[str, RuntimeSession] = {}
 def create_session(
     flow: DecisionFlow,
     variable_overrides: dict | None = None,
+    no_chain: bool = False,
 ) -> RuntimeSession:
     """Create and persist a new session for the given flow.
 
@@ -33,11 +34,14 @@ def create_session(
     variables = {k: v.initial for k, v in flow.variables.items()}
     flags = {k: f.initial for k, f in flow.flags.items()}
 
-    # Apply caller-supplied overrides for declared variables only
+    # Apply caller-supplied overrides.
+    # Declared keys are already initialised above; extra keys (e.g. frequencies
+    # for downstream chained flows such as tower_freq, departure_freq) are stored
+    # as-is so they survive the full session chain without needing to be declared
+    # in each intermediate flow's schema.
     if variable_overrides:
         for key, value in variable_overrides.items():
-            if key in variables:
-                variables[key] = value
+            variables[key] = value
 
     session = RuntimeSession(
         session_id=sid,
@@ -47,6 +51,7 @@ def create_session(
         current_state=flow.start_state,
         variables=variables,
         flags=flags,
+        no_chain=no_chain,
     )
     _sessions[sid] = session
     return session

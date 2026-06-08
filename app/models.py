@@ -119,6 +119,12 @@ class DecisionFlow(BaseModel):
 
     entry_mode: Literal["main", "linear", "parallel", "interrupt"] = "main"
 
+    # Optional: when the flow ends (end_states reached, stack empty), automatically
+    # chain to this flow slug.  Variables already in the session carry over; any
+    # variables/flags declared in the target flow but not yet present are
+    # initialised from their YAML defaults.
+    next_flow: Optional[str] = None
+
     @model_validator(mode="after")
     def _inject_keys(self) -> "DecisionFlow":
         """Inject dict keys as name/id fields so models are self-contained."""
@@ -155,6 +161,9 @@ class RuntimeSession(BaseModel):
 
     active_timers: List[Dict] = Field(default_factory=list)
 
+    # When True, handle_flow_completion will not follow next_flow links.
+    no_chain: bool = False
+
 
 # ---------------------------------------------------------------------------
 # API request / response models
@@ -165,6 +174,10 @@ class CreateSessionRequest(BaseModel):
     # Optional overrides applied on top of the YAML defaults at session creation.
     # Keys must match variable names declared in the flow (unknown keys are ignored).
     variables: Optional[Dict[str, Any]] = None
+    # When True the engine will NOT follow next_flow links at end states.
+    # Use this for single-phase practice so clearance-v1 stops at CLEARANCE_COMPLETE
+    # instead of automatically chaining to taxi-v1.
+    no_chain: bool = False
 
 
 class CreateSessionResponse(BaseModel):
@@ -190,6 +203,9 @@ class TransitionTrace(BaseModel):
 class DecisionResponse(BaseModel):
     session_id: str
     next_state_id: str
+    # The slug of the flow that owns next_state_id.  Usually unchanged, but
+    # can differ from the request's flow when next_flow chaining kicks in.
+    active_flow: str
 
     controller_say_template: Optional[str]
     controller_say_rendered: Optional[str]
@@ -203,6 +219,10 @@ class DecisionResponse(BaseModel):
     fallback_reason: Optional[str]
 
     auto_advanced_states: List[str] = Field(default_factory=list)
+
+    # True when the session has reached a terminal end state (no further chaining
+    # will happen).  The frontend uses this to show the completion screen.
+    session_complete: bool = False
 
 
 # ---------------------------------------------------------------------------

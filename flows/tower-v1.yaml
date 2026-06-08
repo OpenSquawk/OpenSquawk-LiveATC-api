@@ -7,6 +7,9 @@ start_state: INITIAL_CONTACT
 end_states:
   - TOWER_COMPLETE
 
+# After takeoff and frequency readback, pilot checks in with departure control.
+next_flow: departure-v1
+
 entry_mode: main
 
 variables:

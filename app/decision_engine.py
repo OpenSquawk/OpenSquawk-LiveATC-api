@@ -420,21 +420,56 @@ def process_transmission(
         session.current_state = final_state_id
         next_state = _get_state(flow, final_state_id)
 
-    # --- Flow completion / interrupt resume ---
-    # If the new state is an end state and the flow stack is non-empty,
-    # orchestrator pops back to the interrupted flow automatically.
+    # --- Flow completion / interrupt resume / next_flow chain ---
+    # handle_flow_completion may:
+    #   a) pop the interrupt stack (MAYDAY resume), or
+    #   b) replace the active flow with next_flow (clearance → taxi, etc.)
     prev_flow_slug = flow.slug
     handle_flow_completion(session, flow)
     if session.active_flow != prev_flow_slug:
         flow = get_flow(session.active_flow)
         next_state = _get_state(flow, session.current_state)
-        trace.append(_trace("flow_resume", f"Resumed flow '{flow.slug}' at '{next_state.id}'"))
+        trace.append(_trace("flow_changed", f"Flow switched to '{flow.slug}' at '{next_state.id}'"))
+
+        # If the entry state of the new flow is non-pilot, auto-advance through it
+        # so the response always lands on a pilot state (same contract as the rest
+        # of the engine).
+        if next_state.role != "pilot":
+            if next_state.say_template and atc_say_template is None:
+                atc_say_template = next_state.say_template
+            final_state_id, advanced2, auto_trans2 = advance_through_non_pilot(
+                next_state.id, flow, session.variables, session.flags
+            )
+            auto_advanced_states.extend(advanced2)
+            for sid in advanced2:
+                trace.append(_trace("auto_advance", f"Auto-advanced through '{sid}'"))
+                if atc_say_template is None:
+                    intermediate = flow.states.get(sid)
+                    if intermediate and intermediate.say_template:
+                        atc_say_template = intermediate.say_template
+            for auto_trans in auto_trans2:
+                action_msgs = execute_actions(
+                    auto_trans.on_exit_actions + auto_trans.on_enter_actions, session
+                )
+                for msg in action_msgs:
+                    trace.append(_trace("action_execute", f"auto_advance: {msg}"))
+            session.current_state = final_state_id
+            next_state = _get_state(flow, final_state_id)
 
     # --- Step 12: Generate response ---
     # Use ATC speech collected during auto-advance; fall back to the final state's template.
     say_template = atc_say_template or next_state.say_template
     rendered = render_template(say_template, session.variables)
     expected = render_template(next_state.expected_pilot_template, session.variables)
+
+    # Session is complete when it rests at a terminal end state (no further
+    # chaining will happen — either the flow has no next_flow, or no_chain is set).
+    final_flow = get_flow(session.active_flow)
+    session_complete = (
+        session.current_state in final_flow.end_states
+        and not session.flow_stack
+        and (final_flow.next_flow is None or session.no_chain)
+    )
 
     # --- Step 13: Save session ---
     session.decision_history.append({
@@ -462,6 +497,7 @@ def process_transmission(
     return DecisionResponse(
         session_id=session_id,
         next_state_id=next_state.id,
+        active_flow=session.active_flow,
         controller_say_template=say_template,
         controller_say_rendered=rendered,
         expected_pilot_template=expected,
@@ -471,6 +507,7 @@ def process_transmission(
         fallback_used=fallback_used,
         fallback_reason=fallback_reason,
         auto_advanced_states=auto_advanced_states,
+        session_complete=session_complete,
     )
 
 
@@ -558,11 +595,45 @@ def process_timeout(session_id: str) -> DecisionResponse:
         session.current_state = final_state_id
         next_state = _get_state(flow, final_state_id)
 
+    prev_flow_slug_timeout = flow.slug
     handle_flow_completion(session, flow)
+    if session.active_flow != prev_flow_slug_timeout:
+        flow = get_flow(session.active_flow)
+        next_state = _get_state(flow, session.current_state)
+        trace.append(_trace("flow_changed", f"Flow switched to '{flow.slug}' at '{next_state.id}'"))
+
+        if next_state.role != "pilot":
+            if next_state.say_template and atc_say_template is None:
+                atc_say_template = next_state.say_template
+            final_state_id, advanced2, auto_trans2 = advance_through_non_pilot(
+                next_state.id, flow, session.variables, session.flags
+            )
+            auto_advanced_states.extend(advanced2)
+            for sid in advanced2:
+                trace.append(_trace("auto_advance", f"Auto-advanced through '{sid}'"))
+                if atc_say_template is None:
+                    intermediate = flow.states.get(sid)
+                    if intermediate and intermediate.say_template:
+                        atc_say_template = intermediate.say_template
+            for auto_trans in auto_trans2:
+                action_msgs = execute_actions(
+                    auto_trans.on_exit_actions + auto_trans.on_enter_actions, session
+                )
+                for msg in action_msgs:
+                    trace.append(_trace("action_execute", f"auto_advance: {msg}"))
+            session.current_state = final_state_id
+            next_state = _get_state(flow, final_state_id)
 
     say_template = atc_say_template or next_state.say_template
     rendered = render_template(say_template, session.variables)
     expected = render_template(next_state.expected_pilot_template, session.variables)
+
+    final_flow_t = get_flow(session.active_flow)
+    session_complete_t = (
+        session.current_state in final_flow_t.end_states
+        and not session.flow_stack
+        and (final_flow_t.next_flow is None or session.no_chain)
+    )
 
     session.decision_history.append({
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -577,6 +648,7 @@ def process_timeout(session_id: str) -> DecisionResponse:
     return DecisionResponse(
         session_id=session_id,
         next_state_id=next_state.id,
+        active_flow=session.active_flow,
         controller_say_template=say_template,
         controller_say_rendered=rendered,
         expected_pilot_template=expected,
@@ -586,4 +658,5 @@ def process_timeout(session_id: str) -> DecisionResponse:
         fallback_used=False,
         fallback_reason=None,
         auto_advanced_states=auto_advanced_states,
+        session_complete=session_complete_t,
     )

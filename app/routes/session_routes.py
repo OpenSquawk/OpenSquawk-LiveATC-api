@@ -20,7 +20,7 @@ def create_radio_session(body: CreateSessionRequest):
         logger.warning("SESSION CREATE  flow=%s  NOT FOUND", body.flow_slug)
         raise HTTPException(status_code=404, detail=str(exc))
 
-    session = create_session(flow, variable_overrides=body.variables)
+    session = create_session(flow, variable_overrides=body.variables, no_chain=body.no_chain)
 
     # Render the expected pilot phrase for the start state so the frontend
     # can show the correct hint immediately without a round-trip transmission.

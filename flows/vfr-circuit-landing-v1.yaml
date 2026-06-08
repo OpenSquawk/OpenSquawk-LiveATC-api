@@ -7,6 +7,9 @@ start_state: INITIAL_TOWER_CONTACT
 end_states:
   - CIRCUIT_LANDING_COMPLETE
 
+# After landing and tower handoff, pilot contacts ground for taxi-in to stand.
+next_flow: taxi-in-v1
+
 entry_mode: main
 
 variables:

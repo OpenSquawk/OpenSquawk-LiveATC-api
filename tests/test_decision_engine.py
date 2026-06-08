@@ -3,9 +3,15 @@
 The clearance flow (clearance-v1.yaml) models ICAO IFR clearance delivery:
   INITIAL_CALL → ATC_ISSUES_CLEARANCE (auto) → PILOT_READBACK
                → ATC_READBACK_CORRECT (auto) → CLEARANCE_COMPLETE
+               ↓ next_flow chain
+  REQUEST_STARTUP (taxi-v1)
 
 Trigger for INITIAL_CALL ok_next: "information|request.*clear|IFR|clearance|stand"
 Readback required at PILOT_READBACK: squawk (2341) and initial_altitude (5000).
+
+Note: clearance-v1 has next_flow=taxi-v1, so completing the clearance automatically
+chains to taxi-v1 at REQUEST_STARTUP.  The "end state raises ValueError" behaviour
+is tested via a flow without next_flow (using the taxi-v1 session separately).
 """
 
 import pytest
@@ -60,7 +66,8 @@ class TestDecisionEngine:
         resp = process_transmission(clearance_session.session_id, req)
         assert "regex_match" in [t.type for t in resp.trace]
 
-    def test_correct_readback_advances_to_clearance_complete(self, clearance_session):
+    def test_correct_readback_chains_to_taxi_flow(self, clearance_session):
+        """Completing the clearance readback chains to taxi-v1 via next_flow."""
         process_transmission(
             clearance_session.session_id,
             DecisionRequest(pilot_utterance=GOOD_INITIAL_CALL),
@@ -69,8 +76,16 @@ class TestDecisionEngine:
             clearance_session.session_id,
             DecisionRequest(pilot_utterance=GOOD_READBACK),
         )
-        assert resp.next_state_id == "CLEARANCE_COMPLETE"
+        # next_flow=taxi-v1 → engine chains past CLEARANCE_COMPLETE to REQUEST_STARTUP
+        assert resp.next_state_id == "REQUEST_STARTUP"
+        assert resp.active_flow == "taxi-v1"
         assert resp.fallback_used is False
+        # ATC speech is still from clearance (the last controller message)
+        assert resp.controller_say_rendered is not None
+        assert "ground" in (resp.controller_say_rendered or "").lower()
+        # Expected pilot template is now the taxi startup request
+        assert resp.expected_pilot_template is not None
+        assert "startup" in (resp.expected_pilot_template or "").lower()
 
     def test_incorrect_readback_loops_back(self, clearance_session):
         process_transmission(
@@ -141,22 +156,37 @@ class TestDecisionEngine:
         )
         assert hasattr(resp, "controller_say_rendered")
 
-    def test_end_state_raises_value_error(self, clearance_session):
-        """Transmitting after the flow ends raises ValueError, not a routing crash."""
+    def test_end_state_raises_value_error(self):
+        """Transmitting after a terminal flow (no next_flow) raises ValueError."""
+        from app.flow_loader import get_flow
+        from app.session_store import save_session
+        # departure-v1 has no next_flow — DEPARTURE_COMPLETE is truly terminal.
+        dep_flow = get_flow("departure")
+        session = create_session(dep_flow)
+        session.current_state = "DEPARTURE_COMPLETE"
+        save_session(session)
+        with pytest.raises(ValueError, match="complete"):
+            process_transmission(
+                session.session_id,
+                DecisionRequest(pilot_utterance="anything"),
+            )
+
+    def test_clearance_variables_carry_over_to_taxi(self, clearance_session):
+        """Variables set during clearance (callsign, stand) are available in taxi-v1."""
         process_transmission(
             clearance_session.session_id,
             DecisionRequest(pilot_utterance=GOOD_INITIAL_CALL),
         )
-        process_transmission(
+        resp = process_transmission(
             clearance_session.session_id,
             DecisionRequest(pilot_utterance=GOOD_READBACK),
         )
-        # Session is now at CLEARANCE_COMPLETE (end state, no stack)
-        with pytest.raises(ValueError, match="complete"):
-            process_transmission(
-                clearance_session.session_id,
-                DecisionRequest(pilot_utterance="anything"),
-            )
+        # After chaining to taxi-v1, callsign and stand must still be correct
+        assert resp.variables.get("callsign") == "DLH39A"
+        assert resp.variables.get("stand") == "A12"
+        # Taxi-specific variables are now initialised too
+        assert "qnh" in resp.variables
+        assert "runway" in resp.variables
 
 
 class TestFlowInterrupt:

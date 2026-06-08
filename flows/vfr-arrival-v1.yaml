@@ -7,6 +7,9 @@ start_state: INITIAL_CONTACT
 end_states:
   - VFR_ARRIVAL_COMPLETE
 
+# After receiving joining clearance, pilot contacts tower for circuit and landing.
+next_flow: vfr-circuit-landing-v1
+
 entry_mode: main
 
 variables:
