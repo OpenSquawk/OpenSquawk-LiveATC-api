@@ -1,5 +1,11 @@
 """Shared pytest fixtures."""
 
+import os
+
+# Must run before any app.* import: keeps tests on the process-local store
+# instead of writing a SQLite file into the repo.
+os.environ.setdefault("SESSION_STORE_TYPE", "memory")
+
 from pathlib import Path
 
 import pytest
