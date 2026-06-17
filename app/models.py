@@ -223,6 +223,19 @@ class TransitionTrace(BaseModel):
     message: str
 
 
+class ReadbackFieldDetail(BaseModel):
+    """Per-field readback diagnostic, surfaced to the comm log for debugging."""
+    field: str
+    expected: str
+    matched: bool
+    # Which accepted form actually matched the utterance ("two five right",
+    # "icao_phonetic", …), or None when the field was missed.
+    matched_via: Optional[str] = None
+    # All spoken forms that were accepted as a match for this field.
+    accepted_forms: List[str] = Field(default_factory=list)
+    note: Optional[str] = None
+
+
 class DecisionResponse(BaseModel):
     session_id: str
     next_state_id: str
@@ -246,6 +259,11 @@ class DecisionResponse(BaseModel):
     # True when the session has reached a terminal end state (no further chaining
     # will happen).  The frontend uses this to show the completion screen.
     session_complete: bool = False
+
+    # Per-field readback diagnostic for the pilot state just evaluated (empty when
+    # the state required no readback).  Lets the comm log show exactly which
+    # elements were recognised and which were missing.
+    readback_report: List[ReadbackFieldDetail] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

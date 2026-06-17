@@ -15,7 +15,9 @@ Phonetic forms are inferred from the value's pattern:
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+import jellyfish
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +196,71 @@ def _value_is_icao_ident(value: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Fuzzy SID/STAR matching
+# ---------------------------------------------------------------------------
+# Named procedures (SIDs/STARs) are spoken as a *pronounceable word* plus a
+# revision digit and a final letter — "TOBAK2E" is said "Tobak two echo", not
+# spelled "Tango Oscar Bravo Alpha Kilo two echo". STT then mangles the word
+# ("Tobacco too Echo", "Maroon seven foxtrot"). Neither the literal nor the
+# letter-by-letter phonetic regex matches that. We therefore decompose the
+# ident into stem + digit(s) + final letter and match each part leniently: the
+# digit and letter strictly (digit/word, letter/phonetic), the stem fuzzily
+# via jellyfish (Metaphone equality or a high Jaro-Winkler similarity).
+
+# Jaro-Winkler floor for accepting a stem.  tobacco~tobak=0.87, maroon~marun=0.88
+# (the latter also caught by Metaphone), while unrelated words sit at <=0.55.
+_STEM_SIMILARITY_THRESHOLD = 0.84
+
+
+def _decompose_ident(value: str) -> Optional[Tuple[str, str, str]]:
+    """'TOBAK2E' → ('TOBAK', '2', 'E'); None when not SID-shaped."""
+    m = re.match(r'^([A-Z]{2,})(\d{1,2})([A-Z])$', value.strip().upper())
+    return (m.group(1), m.group(2), m.group(3)) if m else None
+
+
+def _fuzzy_ident_match(value: str, utterance: str) -> Optional[str]:
+    """Lenient match for a word-pronounced SID/STAR.
+
+    Requires the stem (fuzzy), every digit, and the final letter to be present.
+    Returns a human-readable description of the match, or None.
+    """
+    parts = _decompose_ident(value)
+    if parts is None:
+        return None
+    stem, digits, letter = parts
+
+    # Final letter: phonetic word or the bare letter as a standalone token.
+    letter_word = _LETTER_PHONETICS.get(letter, re.escape(letter.lower()))
+    if not re.search(rf'\b(?:{letter_word}|{re.escape(letter.lower())})\b', utterance, re.IGNORECASE):
+        return None
+
+    # Digit(s): each as digit or spoken word, contiguous (allowing separators).
+    digit_pat = r'[\s,.\-]*'.join(_DIGIT_PHONETICS.get(d, re.escape(d)) for d in digits)
+    if not re.search(digit_pat, utterance, re.IGNORECASE):
+        return None
+
+    # Stem: best spoken word by Metaphone equality or Jaro-Winkler similarity.
+    stem_l = stem.lower()
+    stem_mp = jellyfish.metaphone(stem_l)
+    best_word: Optional[str] = None
+    best_score = 0.0
+    for word in re.findall(r'[a-z]{3,}', utterance.lower()):
+        if word == stem_l:
+            best_word, best_score = word, 1.0
+            break
+        score = jellyfish.jaro_winkler_similarity(word, stem_l)
+        if stem_mp and jellyfish.metaphone(word) == stem_mp:
+            score = max(score, 0.95)
+        if score > best_score:
+            best_word, best_score = word, score
+
+    if best_word is None or best_score < _STEM_SIMILARITY_THRESHOLD:
+        return None
+
+    return f'fuzzy_sid:{best_word} {digits} {letter.lower()}'
+
+
+# ---------------------------------------------------------------------------
 # Core evaluator
 # ---------------------------------------------------------------------------
 
@@ -201,9 +268,9 @@ def evaluate_readback_simple(
     pilot_utterance: str,
     readback_required: List[str],
     variables: Dict[str, Any],
-) -> Tuple[bool, List[str]]:
+) -> Tuple[bool, List[str], List[Dict[str, Any]]]:
     """
-    Returns (passed, missing_fields).
+    Returns (passed, missing_fields, reports).
 
     A field passes if the current variable value is found in the utterance
     as any of:
@@ -211,40 +278,64 @@ def evaluate_readback_simple(
       2. Any standard spoken form (frequency, FL, runway, altitude, …)
       3. For ICAO alphanumeric idents: the ICAO phonetic sequential regex
          (e.g. "SULUS5S" → Sierra Uniform Lima Uniform Sierra 5 Sierra)
+
+    ``reports`` is a per-field diagnostic for debugging: what was expected, the
+    accepted spoken forms tried, whether it matched, and which form matched the
+    utterance (so the comm log can show "expected 25R ← matched 'two five right'").
     """
-    missing = []
+    missing: List[str] = []
+    reports: List[Dict[str, Any]] = []
     utterance = pilot_utterance
 
     for field in readback_required:
         expected = variables.get(field)
-        if expected is None:
-            missing.append(field)
-            continue
-        expected_str = str(expected).strip()
-        if not expected_str:
-            continue
+        expected_str = "" if expected is None else str(expected).strip()
 
-        found = False
+        forms = spoken_forms(expected_str) if expected_str else []
+        matched = False
+        matched_via: Optional[str] = None
 
         # 1. Check literal value and all static spoken forms
-        for form in spoken_forms(expected_str):
-            if re.search(re.escape(form), utterance, re.IGNORECASE):
-                found = True
+        for form in forms:
+            if form and re.search(re.escape(form), utterance, re.IGNORECASE):
+                matched = True
+                matched_via = form
                 break
 
         # 2. Check ICAO phonetic sequential pattern for identifiers
-        if not found and _value_is_icao_ident(expected_str):
+        if not matched and expected_str and _value_is_icao_ident(expected_str):
             pattern = _icao_identifier_regex(expected_str)
             try:
                 if re.search(pattern, utterance, re.IGNORECASE):
-                    found = True
+                    matched = True
+                    matched_via = "icao_phonetic"
             except re.error:
                 pass  # malformed pattern — skip
 
-        if not found:
+        # 3. Fuzzy match for word-pronounced SID/STAR names ("Tobak two echo"
+        #    transcribed as "Tobacco too Echo").
+        if not matched and expected_str:
+            fuzzy = _fuzzy_ident_match(expected_str, utterance)
+            if fuzzy is not None:
+                matched = True
+                matched_via = fuzzy
+
+        report: Dict[str, Any] = {
+            "field": field,
+            "expected": expected_str,
+            "matched": matched,
+            "matched_via": matched_via,
+            # Distinct accepted forms tried (literal + phonetic variants).
+            "accepted_forms": list(dict.fromkeys(forms)),
+        }
+        if expected is None:
+            report["note"] = "variable not set"
+        reports.append(report)
+
+        if not matched:
             missing.append(field)
 
-    return (len(missing) == 0), missing
+    return (len(missing) == 0), missing, reports
 
 
 def check_readback(
@@ -252,17 +343,18 @@ def check_readback(
     readback_required: List[str],
     readback_mode: str,
     variables: Dict[str, Any],
-) -> Tuple[bool, List[str]]:
+) -> Tuple[bool, List[str], List[Dict[str, Any]]]:
     """
     Dispatch to the appropriate readback evaluator.
 
-    Returns (passed, missing_fields).
+    Returns (passed, missing_fields, reports).  ``reports`` is empty when no
+    readback is required.
     """
     if readback_mode == "none" or not readback_required:
-        return True, []
+        return True, [], []
 
     if readback_mode in ("simple", "strict"):
         # strict is reserved for future stricter matching; uses simple for now
         return evaluate_readback_simple(pilot_utterance, readback_required, variables)
 
-    return True, []
+    return True, [], []

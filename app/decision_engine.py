@@ -279,6 +279,7 @@ def process_transmission(
     trace: List[TransitionTrace] = []
     fallback_used = False
     fallback_reason: Optional[str] = None
+    readback_report: List[Dict[str, Any]] = []
 
     # --- Step 1: Load session ---
     session = get_session(session_id)
@@ -411,7 +412,7 @@ def process_transmission(
         and current_state.readback_required
         and current_state.readback_mode != "none"
     ):
-        passed, missing = check_readback(
+        passed, missing, readback_report = check_readback(
             request.pilot_utterance,
             current_state.readback_required,
             current_state.readback_mode,
@@ -420,7 +421,11 @@ def process_transmission(
         if passed:
             trace.append(_trace("readback_pass", f"Readback OK — fields present: {current_state.readback_required}"))
         else:
-            trace.append(_trace("readback_fail", f"Readback missing fields: {missing} — using bad_next"))
+            recognised = ", ".join(
+                f"{r['field']}={r['expected']!r}→{'✓ ' + str(r['matched_via']) if r['matched'] else '✗ missing'}"
+                for r in readback_report
+            )
+            trace.append(_trace("readback_fail", f"Readback missing fields: {missing} — using bad_next | {recognised}"))
             # Override: push to bad_next
             if current_state.bad_next:
                 selected_transition = current_state.bad_next[0]
@@ -607,6 +612,7 @@ def process_transmission(
         fallback_reason=fallback_reason,
         auto_advanced_states=auto_advanced_states,
         session_complete=session_complete,
+        readback_report=readback_report,
     )
 
 

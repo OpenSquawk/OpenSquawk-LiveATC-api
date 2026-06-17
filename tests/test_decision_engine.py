@@ -300,6 +300,64 @@ class TestTaxiInParkingStandNoCollision:
         assert "the apron" in say
 
 
+class TestFuzzySidReadback:
+    """Word-pronounced SID names mangled by STT still match the readback."""
+
+    def test_tobak2e_matches_tobacco_too_echo(self):
+        from app.readback_evaluator import evaluate_readback_simple
+        ok, missing, rep = evaluate_readback_simple(
+            "Cleared Tobacco too Echo, climb initially 5000, squawk 0000",
+            ["sid"], {"sid": "TOBAK2E"},
+        )
+        assert ok and missing == []
+        assert rep[0]["matched_via"].startswith("fuzzy_sid")
+
+    def test_marun7f_matches_maroon_seven_foxtrot(self):
+        from app.readback_evaluator import _fuzzy_ident_match
+        assert _fuzzy_ident_match("MARUN7F", "maroon seven foxtrot") is not None
+
+    def test_wrong_digit_or_letter_does_not_match(self):
+        from app.readback_evaluator import _fuzzy_ident_match
+        # Right stem, wrong revision digit / final letter → no match.
+        assert _fuzzy_ident_match("TOBAK2E", "tobacco three echo") is None
+        assert _fuzzy_ident_match("TOBAK2E", "tobacco two sierra") is None
+
+    def test_unrelated_word_does_not_match(self):
+        from app.readback_evaluator import _fuzzy_ident_match
+        assert _fuzzy_ident_match("TOBAK2E", "runway two echo terminal") is None
+
+
+class TestReadbackReport:
+    """Per-field readback diagnostics surfaced on the response."""
+
+    @pytest.fixture
+    def clearance_session(self):
+        from app.flow_loader import get_flow
+        return create_session(get_flow("clearance"))
+
+    def test_report_present_on_readback_state(self, clearance_session):
+        process_transmission(clearance_session.session_id, DecisionRequest(pilot_utterance=GOOD_INITIAL_CALL))
+        resp = process_transmission(clearance_session.session_id, DecisionRequest(pilot_utterance=GOOD_READBACK))
+        fields = {r.field: r for r in resp.readback_report}
+        assert set(fields) == {"sid", "squawk", "initial_altitude"}
+        assert all(r.matched for r in resp.readback_report)
+        # The matched form is reported so the log can show what was recognised.
+        assert fields["squawk"].matched_via is not None
+
+    def test_report_marks_missing_fields(self, clearance_session):
+        process_transmission(clearance_session.session_id, DecisionRequest(pilot_utterance=GOOD_INITIAL_CALL))
+        resp = process_transmission(clearance_session.session_id, DecisionRequest(pilot_utterance="acknowledged"))
+        by_field = {r.field: r for r in resp.readback_report}
+        assert by_field["squawk"].matched is False
+        assert by_field["squawk"].matched_via is None
+        # Accepted forms are exposed so the user can see what would have matched.
+        assert "2341" in by_field["squawk"].accepted_forms
+
+    def test_no_report_on_non_readback_state(self, clearance_session):
+        resp = process_transmission(clearance_session.session_id, DecisionRequest(pilot_utterance=GOOD_INITIAL_CALL))
+        assert resp.readback_report == []
+
+
 class TestFlowInterrupt:
     """Tests for the MAYDAY / PAN-PAN flow interrupt mechanism."""
 
