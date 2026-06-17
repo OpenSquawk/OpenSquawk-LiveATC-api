@@ -74,6 +74,11 @@ class DecisionState(BaseModel):
     auto_advance_on_silence: bool = False
     auto_advance_timeout_ms: int = 30000
 
+    # When True, a greeting-only utterance ("Tower, callsign, good day") at this
+    # state is answered with a "pass your message" prompt and the session stays
+    # put.  Set on initial-contact pilot states.  Handled globally in the engine.
+    allow_greeting: bool = False
+
     # Transitions
     ok_next: List[Transition] = Field(default_factory=list)
     bad_next: List[Transition] = Field(default_factory=list)
@@ -178,6 +183,20 @@ class CreateSessionRequest(BaseModel):
     # Use this for single-phase practice so clearance-v1 stops at CLEARANCE_COMPLETE
     # instead of automatically chaining to taxi-v1.
     no_chain: bool = False
+    # Optional ICAO codes resolved against the bundled airport dataset at session
+    # creation: the station supplies real <position>_freq values (inventing any it
+    # does not publish), the destination supplies the spoken destination city.
+    # Explicit `variables` still win over anything resolved here.
+    airport_icao: Optional[str] = None
+    destination_icao: Optional[str] = None
+
+
+class ResolvedAirport(BaseModel):
+    icao: str
+    city_en: str
+    city_de: Optional[str] = None
+    # Logical positions whose frequency was invented (no published data).
+    invented_positions: List[str] = Field(default_factory=list)
 
 
 class CreateSessionResponse(BaseModel):
@@ -188,6 +207,10 @@ class CreateSessionResponse(BaseModel):
     flags: Dict[str, bool]
     # Pre-rendered expected pilot phrase for the starting state (if any)
     expected_pilot_template: Optional[str] = None
+    # Resolved station / destination airports (names + which freqs were invented),
+    # surfaced so the frontend can confirm the German name or let the user skip it.
+    station_airport: Optional[ResolvedAirport] = None
+    destination_airport: Optional[ResolvedAirport] = None
 
 
 class DecisionRequest(BaseModel):

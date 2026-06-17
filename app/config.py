@@ -13,6 +13,9 @@ SESSION_TTL_HOURS = float(os.getenv("SESSION_TTL_HOURS", "5"))
 MAX_FLOW_STACK_DEPTH = int(os.getenv("MAX_FLOW_STACK_DEPTH", "5"))
 MAX_AUTO_ADVANCE_HOPS = int(os.getenv("MAX_AUTO_ADVANCE_HOPS", "50"))
 READBACK_TIMEOUT_MS = int(os.getenv("READBACK_TIMEOUT_MS", "30000"))
+# Silence window on a readback state before ATC re-requests the readback.
+# The frontend fires POST /session/{id}/timeout once this elapses with no utterance.
+READBACK_SILENCE_MS = int(os.getenv("READBACK_SILENCE_MS", "40000"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "info").upper()
 
 _DEFAULT_ORIGINS = ",".join([

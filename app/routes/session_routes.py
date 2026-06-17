@@ -2,10 +2,22 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
+from app.airport_data import AirportInfo, resolve_for_session
 from app.flow_loader import get_flow
-from app.models import CreateSessionRequest, CreateSessionResponse
+from app.models import CreateSessionRequest, CreateSessionResponse, ResolvedAirport
 from app.session_store import create_session, delete_session, get_session, list_session_ids
 from app.template_renderer import render_template
+
+
+def _to_resolved(info: AirportInfo | None) -> ResolvedAirport | None:
+    if info is None:
+        return None
+    return ResolvedAirport(
+        icao=info.icao,
+        city_en=info.city_en,
+        city_de=info.city_de,
+        invented_positions=[p for p, was in info.invented.items() if was],
+    )
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/radio", tags=["sessions"])
@@ -20,7 +32,12 @@ def create_radio_session(body: CreateSessionRequest):
         logger.warning("SESSION CREATE  flow=%s  NOT FOUND", body.flow_slug)
         raise HTTPException(status_code=404, detail=str(exc))
 
-    session = create_session(flow, variable_overrides=body.variables, no_chain=body.no_chain)
+    # Resolve airport names + real frequencies, if ICAO codes were supplied.
+    # These act as defaults; any explicit `variables` from the caller win.
+    resolution = resolve_for_session(body.airport_icao, body.destination_icao)
+    merged_overrides = {**resolution.variables, **(body.variables or {})}
+
+    session = create_session(flow, variable_overrides=merged_overrides, no_chain=body.no_chain)
 
     # Render the expected pilot phrase for the start state so the frontend
     # can show the correct hint immediately without a round-trip transmission.
@@ -45,6 +62,8 @@ def create_radio_session(body: CreateSessionRequest):
         variables=session.variables,
         flags=session.flags,
         expected_pilot_template=expected_pilot,
+        station_airport=_to_resolved(resolution.station),
+        destination_airport=_to_resolved(resolution.destination),
     )
 
 

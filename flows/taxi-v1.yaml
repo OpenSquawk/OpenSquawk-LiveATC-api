@@ -71,8 +71,14 @@ states:
     expected_pilot_template: "{{callsign}}, stand {{stand}}, information {{information}}, request startup"
     frequency: "121.800"
     frequency_name: "Ground"
+    allow_greeting: true
 
     ok_next:
+      # Combined "startup AND pushback" — listed first so a combined call wins
+      # over the startup-only branch.
+      - to: ATC_STARTUP_PUSHBACK_CLEARANCE
+        trigger: "push.*back|pushback"
+        label: "Pilot requested startup and pushback together"
       - to: ATC_STARTUP_CLEARANCE
         trigger: "start.*up|startup|request.*start|information"
         label: "Pilot requested startup with required elements"
@@ -166,14 +172,79 @@ states:
         label: "Correction given — pilot to try again"
 
   # ─────────────────────────────────────────────────────────────────────────────
+  # 4b. Combined startup + pushback path (pilot requested both at once)
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_STARTUP_PUSHBACK_CLEARANCE:
+    role: atc
+    phase: taxi
+    name: "Ground Approves Startup and Pushback"
+    description: "Ground controller approves startup and pushback in one call, passing QNH and facing direction"
+    say_template: "{{callsign}}, startup and pushback approved, QNH {{qnh}}, face {{pushback_direction}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_STARTUP_PUSHBACK_READBACK
+        label: "Combined clearance issued — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: startup_approved
+            value: true
+          - type: set_flag
+            target: pushback_approved
+            value: true
+
+  PILOT_STARTUP_PUSHBACK_READBACK:
+    role: pilot
+    phase: taxi
+    name: "Pilot Reads Back Startup and Pushback Clearance"
+    description: "Pilot reads back QNH and facing direction to confirm the combined startup and pushback clearance"
+    expected_pilot_template: "Startup and pushback approved, QNH {{qnh}}, face {{pushback_direction}}, {{callsign}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    readback_required:
+      - qnh
+      - pushback_direction
+    readback_mode: simple
+
+    ok_next:
+      - to: REQUEST_TAXI
+        trigger: ".*"
+        label: "Combined readback correct"
+
+    bad_next:
+      - to: ATC_STARTUP_PUSHBACK_READBACK_INCORRECT
+        label: "Readback missing QNH or facing direction — controller corrects"
+
+    auto_transitions: []
+
+  ATC_STARTUP_PUSHBACK_READBACK_INCORRECT:
+    role: atc
+    phase: taxi
+    name: "ATC Corrects Combined Readback"
+    description: "Controller repeats QNH and facing direction for the pilot to read back"
+    say_template: "Negative, {{callsign}}, say again: QNH {{qnh}}, face {{pushback_direction}}"
+    frequency: "121.800"
+    frequency_name: "Ground"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_STARTUP_PUSHBACK_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # 5. Pilot requests pushback (engines running)
   # ─────────────────────────────────────────────────────────────────────────────
   REQUEST_PUSHBACK:
     role: pilot
     phase: taxi
     name: "Request Pushback"
-    description: "Pilot calls ground with callsign, stand number, and requests pushback"
-    expected_pilot_template: "{{callsign}}, stand {{stand}}, request pushback"
+    description: "Pilot calls ground with callsign and requests pushback (stand already stated at startup)"
+    expected_pilot_template: "{{callsign}}, request pushback"
     frequency: "121.800"
     frequency_name: "Ground"
 
@@ -193,7 +264,7 @@ states:
     phase: taxi
     name: "ATC Prompts for Pushback Request"
     description: "Controller asks the pilot to include stand number and pushback request"
-    say_template: "{{callsign}}, say again with stand number and pushback request"
+    say_template: "{{callsign}}, say again with pushback request"
     frequency: "121.800"
     frequency_name: "Ground"
 
@@ -210,8 +281,8 @@ states:
     role: atc
     phase: taxi
     name: "Ground Grants Pushback"
-    description: "Ground controller issues pushback clearance with stand number and facing direction"
-    say_template: "{{callsign}}, pushback approved, stand {{stand}}, face {{pushback_direction}}"
+    description: "Ground controller issues pushback clearance with facing direction"
+    say_template: "{{callsign}}, pushback approved, face {{pushback_direction}}"
     frequency: "121.800"
     frequency_name: "Ground"
 
@@ -232,8 +303,8 @@ states:
     role: pilot
     phase: taxi
     name: "Pilot Reads Back Pushback Clearance"
-    description: "Pilot reads back stand number and facing direction to confirm pushback clearance"
-    expected_pilot_template: "Pushback approved, stand {{stand}}, face {{pushback_direction}}, {{callsign}}"
+    description: "Pilot reads back facing direction to confirm pushback clearance"
+    expected_pilot_template: "Pushback approved, face {{pushback_direction}}, {{callsign}}"
     frequency: "121.800"
     frequency_name: "Ground"
 
@@ -277,8 +348,8 @@ states:
     role: pilot
     phase: taxi
     name: "Request Taxi"
-    description: "Pilot calls ground ready for taxi, stating destination runway"
-    expected_pilot_template: "{{callsign}}, ready for taxi, runway {{runway}}"
+    description: "Pilot calls ground ready for taxi (runway is assigned by ground, not stated by the pilot)"
+    expected_pilot_template: "{{callsign}}, ready for taxi"
     frequency: "121.800"
     frequency_name: "Ground"
 
@@ -297,8 +368,8 @@ states:
     role: atc
     phase: taxi
     name: "ATC Prompts for Taxi Request"
-    description: "Controller asks the pilot to include callsign, readiness for taxi, and destination runway"
-    say_template: "{{callsign}}, say again, ready for taxi to runway {{runway}}"
+    description: "Controller asks the pilot to include callsign and readiness for taxi"
+    say_template: "{{callsign}}, say again, ready for taxi"
     frequency: "121.800"
     frequency_name: "Ground"
 
@@ -383,8 +454,8 @@ states:
     role: atc
     phase: taxi
     name: "Ground Confirms Taxi Readback"
-    description: "Ground confirms readback correct and instructs pilot to monitor tower approaching the runway"
-    say_template: "Readback correct, {{callsign}}. Monitor tower {{tower_freq}} approaching runway {{runway}}."
+    description: "Ground confirms readback correct and instructs pilot to contact tower approaching the runway"
+    say_template: "Readback correct, {{callsign}}. Contact tower {{tower_freq}} approaching runway {{runway}}."
     frequency: "121.800"
     frequency_name: "Ground"
 
@@ -401,7 +472,7 @@ states:
     role: system
     phase: taxi
     name: "Taxi Complete"
-    description: "Ground movement phase complete. Monitor tower {{tower_freq}} when approaching runway {{runway}}."
+    description: "Ground movement phase complete. Contact tower {{tower_freq}} when approaching runway {{runway}}."
 
     ok_next: []
     bad_next: []

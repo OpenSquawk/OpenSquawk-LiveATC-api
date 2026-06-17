@@ -54,6 +54,7 @@ states:
     description: "Pilot calls tower with callsign, holding-short runway, ATIS information code, and readiness for departure"
     expected_pilot_template: "{{callsign}}, holding short runway {{runway}}, information {{information}}, ready for departure"
     frequency_name: "Tower"
+    allow_greeting: true
 
     ok_next:
       - to: ATC_LINEUP_CLEARANCE

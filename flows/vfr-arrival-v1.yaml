@@ -84,6 +84,7 @@ states:
     description: "Pilot calls Approach with callsign, aircraft type, VFR origin, position, altitude, intentions, and information code. Order: station, callsign, type, VFR from origin, position, altitude, for landing, information code."
     expected_pilot_template: "{{callsign}}, {{aircraft_type}}, VFR from {{origin}}, {{position}}, {{altitude}} feet, for landing, information {{information}}"
     frequency_name: "Approach"
+    allow_greeting: true
 
     ok_next:
       - to: ATC_SQUAWK_QNH

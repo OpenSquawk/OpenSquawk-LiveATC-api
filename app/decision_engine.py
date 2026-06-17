@@ -48,6 +48,29 @@ _EMERGENCY_ENTRY = "MAYDAY_DECLARED"
 
 
 # ---------------------------------------------------------------------------
+# Global greeting intercept
+# ---------------------------------------------------------------------------
+# At an initial-contact pilot state (allow_greeting=True) a pilot may make a
+# bare courtesy call ("München Tower, DLH39A, good day") before passing their
+# full request.  Standard ATC reply is "pass your message" / "go ahead".  The
+# greeting is OPTIONAL: an utterance that also contains the actual request
+# matches a normal ok_next trigger and never reaches this handler.
+
+_GREETING_RE = re.compile(
+    r"\b("
+    r"hello|hallo|hi|hey|good\s*(morning|afternoon|evening|day)|"
+    r"guten\s*(morgen|tag|abend)|gr(ü|ue)(ss|ß)\s*gott|servus|moin"
+    r")\b",
+    re.IGNORECASE,
+)
+_GREETING_REPLY = "{{callsign}}, pass your message"
+
+
+def _is_greeting(utterance: str) -> bool:
+    return bool(_GREETING_RE.search(utterance))
+
+
+# ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
 
@@ -191,6 +214,54 @@ def _llm_fallback(
 
 
 # ---------------------------------------------------------------------------
+# Stay-in-place response (greeting acknowledgement)
+# ---------------------------------------------------------------------------
+
+def _build_stay_response(
+    session: RuntimeSession,
+    state: DecisionState,
+    say_template: str,
+    pilot_utterance: str,
+    match_reason: str,
+    trace: List[TransitionTrace],
+) -> DecisionResponse:
+    """Acknowledge the pilot without leaving the current pilot state.
+
+    Used for the optional greeting handshake: ATC says "pass your message"
+    and the session remains at the same initial-contact state so the pilot can
+    now make the full request.
+    """
+    rendered = render_template(say_template, session.variables)
+    expected = render_template(state.expected_pilot_template, session.variables)
+
+    session.decision_history.append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "pilot_utterance": pilot_utterance,
+        "previous_state": state.id,
+        "next_state": state.id,
+        "match_reason": match_reason,
+        "fallback_used": False,
+    })
+    save_session(session)
+
+    return DecisionResponse(
+        session_id=session.session_id,
+        next_state_id=state.id,
+        active_flow=session.active_flow,
+        controller_say_template=say_template,
+        controller_say_rendered=rendered,
+        expected_pilot_template=expected,
+        variables=dict(session.variables),
+        flags=dict(session.flags),
+        trace=trace,
+        fallback_used=False,
+        fallback_reason=None,
+        auto_advanced_states=[],
+        session_complete=False,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Core engine
 # ---------------------------------------------------------------------------
 
@@ -283,6 +354,34 @@ def process_transmission(
                 ))
         except KeyError:
             logger.warning("Emergency flow '%s' not loaded — MAYDAY not intercepted", _EMERGENCY_FLOW)
+
+    # --- Step 5c: Global greeting intercept (optional courtesy call) ---
+    # Only at initial-contact states, and only when the utterance does NOT also
+    # match a real request trigger (an ok_next match takes precedence below).
+    if (
+        selected_transition is None
+        and current_state.allow_greeting
+        and _is_greeting(request.pilot_utterance)
+    ):
+        ok_trans, _ = select_transition(
+            request.pilot_utterance, current_state.ok_next,
+            session.variables, session.flags,
+        )
+        if ok_trans is None:
+            trace.append(_trace(
+                "greeting",
+                f"Greeting-only call at '{current_state.id}' — replying 'pass your message'",
+            ))
+            _log_result(
+                session_id=session_id, state_in=current_state.id,
+                state_out=current_state.id, match_reason="greeting",
+                auto_advanced=[], fallback_used=False, fallback_reason=None,
+                say_template=_GREETING_REPLY, trace=trace,
+            )
+            return _build_stay_response(
+                session, current_state, _GREETING_REPLY,
+                request.pilot_utterance, "greeting", trace,
+            )
 
     # --- Step 6: Match utterance against state candidates (if not already an emergency) ---
     if selected_transition is None:
@@ -542,23 +641,33 @@ def process_timeout(session_id: str) -> DecisionResponse:
             f"'{current_state.id}' is role={current_state.role}"
         )
 
-    if not current_state.auto_advance_on_silence:
-        raise ValueError(
-            f"State '{current_state.id}' does not have auto_advance_on_silence enabled"
-        )
-
-    # Find the first auto_transition with no trigger whose guard passes.
     timeout_trans: Optional[Transition] = None
-    for t in current_state.auto_transitions:
-        if t.trigger is not None:
-            continue
-        if t.condition is None or evaluate_guard(t.condition, session.variables, session.flags):
-            timeout_trans = t
-            break
 
-    if timeout_trans is None:
+    if current_state.auto_advance_on_silence:
+        # Find the first auto_transition with no trigger whose guard passes.
+        for t in current_state.auto_transitions:
+            if t.trigger is not None:
+                continue
+            if t.condition is None or evaluate_guard(t.condition, session.variables, session.flags):
+                timeout_trans = t
+                break
+        if timeout_trans is None:
+            raise ValueError(
+                f"No unconditional auto-transition found in state '{current_state.id}'"
+            )
+    elif current_state.readback_required and current_state.bad_next:
+        # No explicit silence transition, but this is a readback state: after the
+        # silence window the controller re-requests the readback by routing to the
+        # correction prompt (bad_next[0]), which loops back to the readback state.
+        timeout_trans = current_state.bad_next[0]
+        trace.append(_trace(
+            "readback_silence",
+            f"No readback after silence window — re-requesting via '{timeout_trans.to}'",
+        ))
+    else:
         raise ValueError(
-            f"No unconditional auto-transition found in state '{current_state.id}'"
+            f"State '{current_state.id}' does not have auto_advance_on_silence enabled "
+            f"and is not a readback state"
         )
 
     if timeout_trans.to not in flow.states:

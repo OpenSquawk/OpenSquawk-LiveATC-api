@@ -17,7 +17,7 @@ is tested via a flow without next_flow (using the taxi-v1 session separately).
 import pytest
 
 from app import session_store
-from app.decision_engine import process_transmission
+from app.decision_engine import process_timeout, process_transmission
 from app.flow_loader import load_all_flows
 from app.models import DecisionRequest, LoopDetectedError
 from app.session_store import create_session, get_session
@@ -187,6 +187,117 @@ class TestDecisionEngine:
         # Taxi-specific variables are now initialised too
         assert "qnh" in resp.variables
         assert "runway" in resp.variables
+
+
+class TestGreeting:
+    """Optional courtesy-call handshake at initial-contact states."""
+
+    @pytest.fixture
+    def taxi_session(self):
+        from app.flow_loader import get_flow
+        return create_session(get_flow("taxi"))
+
+    def test_greeting_only_stays_and_prompts(self, taxi_session):
+        resp = process_transmission(
+            taxi_session.session_id,
+            DecisionRequest(pilot_utterance="Munich Ground, DLH39A, good day"),
+        )
+        # Stays at the initial state and replies "pass your message"
+        assert resp.next_state_id == "REQUEST_STARTUP"
+        assert "pass your message" in (resp.controller_say_rendered or "").lower()
+        assert "greeting" in [t.type for t in resp.trace]
+
+    def test_greeting_with_request_advances(self, taxi_session):
+        # A greeting that ALSO carries the request must not be intercepted.
+        resp = process_transmission(
+            taxi_session.session_id,
+            DecisionRequest(pilot_utterance="Good day, DLH39A, request startup"),
+        )
+        assert resp.next_state_id == "PILOT_STARTUP_READBACK"
+
+    def test_greeting_not_intercepted_when_not_allowed(self):
+        from app.flow_loader import get_flow
+        # PILOT_READBACK in clearance has no allow_greeting → greeting is just a
+        # normal (non-matching) utterance, handled by readback/bad_next.
+        session = create_session(get_flow("clearance"))
+        process_transmission(session.session_id, DecisionRequest(pilot_utterance="request clearance"))
+        resp = process_transmission(session.session_id, DecisionRequest(pilot_utterance="hello"))
+        assert resp.next_state_id == "PILOT_READBACK"  # looped back, not "pass your message"
+        assert "greeting" not in [t.type for t in resp.trace]
+
+
+class TestCombinedStartupPushback:
+    @pytest.fixture
+    def taxi_session(self):
+        from app.flow_loader import get_flow
+        return create_session(get_flow("taxi"))
+
+    def test_combined_request_routes_to_combined_clearance(self, taxi_session):
+        resp = process_transmission(
+            taxi_session.session_id,
+            DecisionRequest(pilot_utterance="DLH39A, stand A12, request startup and pushback"),
+        )
+        assert resp.next_state_id == "PILOT_STARTUP_PUSHBACK_READBACK"
+        say = (resp.controller_say_rendered or "").lower()
+        assert "startup and pushback approved" in say
+
+    def test_combined_readback_reaches_request_taxi(self, taxi_session):
+        process_transmission(
+            taxi_session.session_id,
+            DecisionRequest(pilot_utterance="DLH39A, request startup and pushback"),
+        )
+        resp = process_transmission(
+            taxi_session.session_id,
+            DecisionRequest(pilot_utterance="startup and pushback approved, QNH 1013, face west, DLH39A"),
+        )
+        assert resp.next_state_id == "REQUEST_TAXI"
+
+    def test_startup_only_still_works(self, taxi_session):
+        resp = process_transmission(
+            taxi_session.session_id,
+            DecisionRequest(pilot_utterance="DLH39A, stand A12, request startup"),
+        )
+        assert resp.next_state_id == "PILOT_STARTUP_READBACK"
+
+
+class TestReadbackSilenceTimeout:
+    @pytest.fixture
+    def taxi_session(self):
+        from app.flow_loader import get_flow
+        return create_session(get_flow("taxi"))
+
+    def test_silence_on_readback_reprompts_and_stays(self, taxi_session):
+        # Advance to a readback state
+        process_transmission(
+            taxi_session.session_id,
+            DecisionRequest(pilot_utterance="DLH39A, request startup"),
+        )
+        resp = process_timeout(taxi_session.session_id)
+        # Re-requests the readback and stays put
+        assert resp.next_state_id == "PILOT_STARTUP_READBACK"
+        assert "readback_silence" in [t.type for t in resp.trace]
+
+    def test_silence_on_non_readback_pilot_state_raises(self, taxi_session):
+        # REQUEST_STARTUP has no readback and no silence auto-transition
+        with pytest.raises(ValueError):
+            process_timeout(taxi_session.session_id)
+
+
+class TestTaxiInParkingStandNoCollision:
+    def test_destination_override_does_not_leak_into_parking(self):
+        from app.flow_loader import get_flow
+        # Simulate a chained arrival where the inbound destination airport (EDDM)
+        # is already in the session.  Taxi-in must say the stand, not "EDDM".
+        session = create_session(
+            get_flow("taxi-in"), variable_overrides={"destination": "EDDM"}
+        )
+        resp = process_transmission(
+            session.session_id,
+            DecisionRequest(pilot_utterance="G-ABCD, vacated runway 25L, for the apron"),
+        )
+        say = (resp.controller_say_rendered or "")
+        assert "EDDM" not in say
+        assert "the apron" in say
 
 
 class TestFlowInterrupt:

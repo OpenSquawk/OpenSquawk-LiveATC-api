@@ -61,6 +61,7 @@ states:
     description: "Pilot calls clearance delivery with callsign, ATIS information code, destination, stand number, and request for IFR clearance"
     expected_pilot_template: "{{callsign}}, information {{information}}, IFR to {{destination}}, stand {{stand}}, request clearance"
     frequency_name: "Clearance Delivery"
+    allow_greeting: true
 
     ok_next:
       - to: ATC_ISSUES_CLEARANCE

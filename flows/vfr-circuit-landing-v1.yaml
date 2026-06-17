@@ -70,6 +70,7 @@ states:
     description: "Pilot calls Tower with callsign and position, requesting circuit join for landing"
     expected_pilot_template: "{{callsign}}, joining {{circuit_direction}} circuit runway {{runway}}, for landing"
     frequency_name: "Tower"
+    allow_greeting: true
 
     ok_next:
       - to: ATC_CIRCUIT_INFO

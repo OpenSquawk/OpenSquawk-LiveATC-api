@@ -51,6 +51,7 @@ states:
     description: "Pilot calls departure control with callsign, passing altitude, and cleared altitude from the SID"
     expected_pilot_template: "{{callsign}}, passing {{passing_altitude}}, climbing {{initial_altitude}}"
     frequency_name: "Departure"
+    allow_greeting: true
 
     ok_next:
       - to: ATC_RADAR_CONTACT

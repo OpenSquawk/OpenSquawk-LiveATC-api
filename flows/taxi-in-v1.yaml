@@ -18,7 +18,11 @@ variables:
     type: string
     initial: "25L"
     mutable_by: action_only
-  destination:
+  # Parking spot to taxi to after landing.  Deliberately NOT named "destination":
+  # that key is used by the inbound flight flows for the destination *airport*
+  # (e.g. EDDM) and is carried across the flow chain in the shared session, so
+  # reusing it here would make Ground say "taxi to EDDM" instead of the stand.
+  parking_stand:
     type: string
     initial: "the apron"
     mutable_by: action_only
@@ -45,9 +49,10 @@ states:
     phase: taxi_in
     name: "Contact Ground After Landing"
     description: "Pilot calls Ground with callsign, confirms vacated runway, and states parking destination"
-    expected_pilot_template: "{{callsign}}, vacated runway {{runway}}, for {{destination}}"
+    expected_pilot_template: "{{callsign}}, vacated runway {{runway}}, for {{parking_stand}}"
     frequency: "121.800"
     frequency_name: "Ground"
+    allow_greeting: true
 
     ok_next:
       - to: ATC_TAXI_IN_ROUTE
@@ -83,7 +88,7 @@ states:
     phase: taxi_in
     name: "Ground Issues Taxi-In Route"
     description: "Ground controller issues taxi route to destination, including any runway crossings"
-    say_template: "{{callsign}}, taxi to {{destination}} via {{taxi_route}}, hold short runway {{crossing_runway}}"
+    say_template: "{{callsign}}, taxi to {{parking_stand}} via {{taxi_route}}, hold short runway {{crossing_runway}}"
     frequency: "121.800"
     frequency_name: "Ground"
 
@@ -105,7 +110,7 @@ states:
     phase: taxi_in
     name: "Pilot Reads Back Taxi-In Route"
     description: "Pilot reads back taxi route and hold-short instruction — crossing runway is mandatory readback"
-    expected_pilot_template: "Taxi to {{destination}} via {{taxi_route}}, hold short runway {{crossing_runway}}, {{callsign}}"
+    expected_pilot_template: "Taxi to {{parking_stand}} via {{taxi_route}}, hold short runway {{crossing_runway}}, {{callsign}}"
     frequency: "121.800"
     frequency_name: "Ground"
 
@@ -167,7 +172,7 @@ states:
     role: system
     phase: taxi_in
     name: "Taxi-In Complete"
-    description: "Post-landing ground movement complete. Proceed to {{destination}} via {{taxi_route}}."
+    description: "Post-landing ground movement complete. Proceed to {{parking_stand}} via {{taxi_route}}."
 
     ok_next: []
     bad_next: []

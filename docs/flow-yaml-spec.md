@@ -112,6 +112,17 @@ states:
     # strict  – reserved for stricter future matching
     # none    – no readback check performed
 
+    allow_greeting: true      # optional · default false · initial-contact states only
+    # When true, a greeting-only call ("München Tower, DLH39A, good day") is
+    # answered globally with "{{callsign}}, pass your message" and the session
+    # stays put. The greeting is OPTIONAL: an utterance that also carries the
+    # request matches a normal ok_next trigger and advances as usual.
+    # Handled in the engine (like the MAYDAY intercept) — no per-state wiring.
+
+    # Readback silence: on a state with readback_required, if the frontend fires
+    # POST /session/{id}/timeout after READBACK_SILENCE_MS (default 40s) with no
+    # utterance, the engine re-requests the readback via bad_next[0]. No YAML needed.
+
     # --- Radio display ---
     frequency_name: "Clearance Delivery"
     # PREFERRED: logical name resolved from airport data at runtime.
