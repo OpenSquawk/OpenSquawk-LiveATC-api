@@ -1,0 +1,291 @@
+slug: ifr-arrival-v1
+schema_version: "2.0"
+name: "IFR Arrival — Approach and ILS"
+description: "IFR pilot checks in with Approach inbound, is radar-identified and given descent + QNH with the approach to expect, is vectored and cleared for the ILS, then handed off to Tower"
+
+start_state: INITIAL_CONTACT
+end_states:
+  - APPROACH_COMPLETE
+
+# After the ILS clearance and tower handoff, the pilot reports to Tower for landing.
+next_flow: ifr-tower-landing-v1
+
+entry_mode: main
+
+variables:
+  callsign:
+    type: string
+    initial: "DLH6RK"
+    mutable_by: action_only
+  information:
+    type: string
+    initial: "K"
+    mutable_by: action_only
+  descend_level:
+    type: string
+    initial: "FL100"
+    mutable_by: action_only
+  intermediate_altitude:
+    type: string
+    initial: "5000"
+    mutable_by: action_only
+  qnh:
+    type: string
+    initial: "1013"
+    mutable_by: action_only
+  approach_type:
+    type: string
+    initial: "ILS"
+    mutable_by: action_only
+  runway:
+    type: string
+    initial: "26L"
+    mutable_by: action_only
+  heading:
+    type: string
+    initial: "280"
+    mutable_by: action_only
+  intercept_altitude:
+    type: string
+    initial: "4000"
+    mutable_by: action_only
+  tower_freq:
+    type: string
+    initial: "118.700"
+    mutable_by: action_only
+
+flags:
+  identified:
+    initial: false
+  approach_cleared:
+    initial: false
+
+states:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 1. Pilot checks in with Approach, inbound and descending
+  # ─────────────────────────────────────────────────────────────────────────────
+  INITIAL_CONTACT:
+    role: pilot
+    phase: approach
+    name: "Initial Contact with Approach"
+    description: "Pilot calls Approach with callsign, the level they are descending to, and the current ATIS information code"
+    expected_pilot_template: "{{callsign}}, descending {{descend_level}}, information {{information}}"
+    frequency_name: "Approach"
+    allow_greeting: true
+
+    ok_next:
+      - to: ATC_IDENTIFIED_DESCENT
+        trigger: "descend|descending|information|inbound|with you|FL|level|passing"
+        label: "Pilot checked in inbound with required elements"
+
+    bad_next:
+      - to: ATC_INITIAL_CONTACT_INCORRECT
+        label: "Incomplete check-in — controller prompts for callsign, level, and information"
+
+    auto_transitions: []
+
+  ATC_INITIAL_CONTACT_INCORRECT:
+    role: atc
+    phase: approach
+    name: "ATC Prompts for Correct Check-in"
+    description: "Controller asks the pilot to pass callsign, present level, and information code"
+    say_template: "{{callsign}}, say again, pass your callsign, level, and information code"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: INITIAL_CONTACT
+        label: "Prompt given — pilot to retry check-in"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 2. Approach identifies and issues descent + QNH + approach to expect
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_IDENTIFIED_DESCENT:
+    role: atc
+    phase: approach
+    name: "Approach Identifies and Descends"
+    description: "Approach radar-identifies the aircraft, issues descent to an intermediate altitude with QNH, and states the approach to expect"
+    say_template: "{{callsign}}, identified, descend altitude {{intermediate_altitude}} feet, QNH {{qnh}}, expect {{approach_type}} approach runway {{runway}}"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_DESCENT_READBACK
+        label: "Descent issued — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: identified
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 3. Pilot reads back descent clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_DESCENT_READBACK:
+    role: pilot
+    phase: approach
+    name: "Pilot Reads Back Descent"
+    description: "Pilot reads back the cleared altitude and QNH — both mandatory"
+    expected_pilot_template: "Descend altitude {{intermediate_altitude}} feet, QNH {{qnh}}, expect {{approach_type}} runway {{runway}}, {{callsign}}"
+    frequency_name: "Approach"
+
+    readback_required:
+      - intermediate_altitude
+      - qnh
+    readback_mode: simple
+
+    ok_next:
+      - to: ATC_APPROACH_CLEARANCE
+        trigger: ".*"
+        label: "Descent readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_DESCENT_READBACK_INCORRECT
+        label: "Readback missing altitude or QNH — controller corrects"
+
+    auto_transitions: []
+
+  ATC_DESCENT_READBACK_INCORRECT:
+    role: atc
+    phase: approach
+    name: "ATC Corrects Descent Readback"
+    description: "Controller repeats the cleared altitude and QNH for the pilot"
+    say_template: "Negative, {{callsign}}, say again: descend altitude {{intermediate_altitude}} feet, QNH {{qnh}}"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_DESCENT_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 4. Approach vectors to final and clears the ILS approach
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_APPROACH_CLEARANCE:
+    role: atc
+    phase: approach
+    name: "Approach Issues ILS Clearance"
+    description: "Approach gives a closing heading to intercept the localizer, a descent to the platform altitude, and clears the ILS approach"
+    say_template: "{{callsign}}, turn left heading {{heading}}, descend {{intercept_altitude}} feet, cleared {{approach_type}} approach runway {{runway}}"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_APPROACH_READBACK
+        label: "ILS clearance issued — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: approach_cleared
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 5. Pilot reads back the approach clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_APPROACH_READBACK:
+    role: pilot
+    phase: approach
+    name: "Pilot Reads Back ILS Clearance"
+    description: "Pilot reads back heading, the platform altitude, and the cleared approach — heading and altitude mandatory"
+    expected_pilot_template: "Heading {{heading}}, descend {{intercept_altitude}} feet, cleared {{approach_type}} approach runway {{runway}}, {{callsign}}"
+    frequency_name: "Approach"
+
+    readback_required:
+      - heading
+      - intercept_altitude
+    readback_mode: simple
+
+    ok_next:
+      - to: ATC_TOWER_HANDOFF
+        trigger: ".*"
+        label: "Approach readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_APPROACH_READBACK_INCORRECT
+        label: "Readback missing heading or altitude — controller corrects"
+
+    auto_transitions: []
+
+  ATC_APPROACH_READBACK_INCORRECT:
+    role: atc
+    phase: approach
+    name: "ATC Corrects Approach Readback"
+    description: "Controller repeats the heading and platform altitude for the pilot"
+    say_template: "Negative, {{callsign}}, say again: heading {{heading}}, descend {{intercept_altitude}} feet"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_APPROACH_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 6. Approach hands the pilot off to Tower
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_TOWER_HANDOFF:
+    role: atc
+    phase: approach
+    name: "Approach Hands Off to Tower"
+    description: "Established on the approach, the pilot is instructed to contact Tower"
+    say_template: "{{callsign}}, contact tower {{tower_freq}}"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_TOWER_FREQ_READBACK
+        label: "Tower handoff given — await pilot readback"
+
+  PILOT_TOWER_FREQ_READBACK:
+    role: pilot
+    phase: approach
+    name: "Pilot Reads Back Tower Frequency"
+    description: "Pilot reads back the tower frequency and own callsign to confirm the frequency change"
+    expected_pilot_template: "{{tower_freq}}, {{callsign}}"
+    frequency_name: "Approach"
+
+    readback_required:
+      - tower_freq
+    readback_mode: simple
+
+    ok_next:
+      - to: APPROACH_COMPLETE
+        trigger: ".*"
+        label: "Tower frequency readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_TOWER_FREQ_READBACK_INCORRECT
+        label: "Readback missing tower frequency — controller corrects"
+
+    auto_transitions: []
+
+  ATC_TOWER_FREQ_READBACK_INCORRECT:
+    role: atc
+    phase: approach
+    name: "ATC Corrects Tower Frequency Readback"
+    description: "Controller repeats the tower frequency for the pilot"
+    say_template: "Negative, {{callsign}}, tower on {{tower_freq}}"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_TOWER_FREQ_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 7. End state — switching to Tower for landing
+  # ─────────────────────────────────────────────────────────────────────────────
+  APPROACH_COMPLETE:
+    role: system
+    phase: approach
+    name: "Approach Phase Complete"
+    description: "Established and cleared for the approach. Switch to tower {{tower_freq}} for landing."
+
+    ok_next: []
+    bad_next: []
+    auto_transitions: []

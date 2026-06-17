@@ -1,0 +1,244 @@
+slug: ifr-tower-landing-v1
+schema_version: "2.0"
+name: "IFR Tower — Landing"
+description: "IFR pilot established on the ILS contacts Tower, is cleared to land, lands and vacates the runway, then is handed off to Ground for taxi-in"
+
+start_state: ESTABLISHED_CONTACT
+end_states:
+  - TOWER_LANDING_COMPLETE
+
+# After vacating, the pilot taxis in to the stand on the Ground frequency.
+next_flow: taxi-in-v1
+
+entry_mode: main
+
+variables:
+  callsign:
+    type: string
+    initial: "DLH6RK"
+    mutable_by: action_only
+  runway:
+    type: string
+    initial: "26L"
+    mutable_by: action_only
+  surface_wind:
+    type: string
+    initial: "260/08"
+    mutable_by: action_only
+  ground_freq:
+    type: string
+    initial: "121.800"
+    mutable_by: action_only
+
+flags:
+  landing_cleared:
+    initial: false
+  runway_vacated:
+    initial: false
+
+states:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 1. Pilot reports established on the ILS to Tower
+  # ─────────────────────────────────────────────────────────────────────────────
+  ESTABLISHED_CONTACT:
+    role: pilot
+    phase: tower
+    name: "Report Established to Tower"
+    description: "Pilot calls Tower reporting established on the ILS for the landing runway"
+    expected_pilot_template: "{{callsign}}, established {{runway}} ILS"
+    frequency_name: "Tower"
+    allow_greeting: true
+
+    ok_next:
+      - to: ATC_LANDING_CLEARANCE
+        trigger: "establish|ils|localizer|localiser|loc|final|fully established"
+        label: "Pilot reported established on the approach"
+
+    bad_next:
+      - to: ATC_ESTABLISHED_INCORRECT
+        label: "Incomplete call — controller prompts to report established"
+
+    auto_transitions: []
+
+  ATC_ESTABLISHED_INCORRECT:
+    role: atc
+    phase: tower
+    name: "ATC Prompts for Established Report"
+    description: "Controller asks the pilot to report established on the ILS with the runway"
+    say_template: "{{callsign}}, say again, report established ILS runway {{runway}}"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: ESTABLISHED_CONTACT
+        label: "Prompt given — pilot to retry"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 2. Tower clears the aircraft to land
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_LANDING_CLEARANCE:
+    role: atc
+    phase: tower
+    name: "Tower Issues Landing Clearance"
+    description: "Tower passes the surface wind and clears the aircraft to land"
+    say_template: "{{callsign}}, runway {{runway}}, surface wind {{surface_wind}}, cleared to land"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_LANDING_READBACK
+        label: "Landing clearance issued — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: landing_cleared
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 3. Pilot reads back the landing clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_LANDING_READBACK:
+    role: pilot
+    phase: tower
+    name: "Pilot Reads Back Landing Clearance"
+    description: "Pilot reads back cleared to land and the runway — mandatory per ICAO"
+    expected_pilot_template: "Cleared to land runway {{runway}}, {{callsign}}"
+    frequency_name: "Tower"
+
+    readback_required:
+      - runway
+    readback_mode: simple
+
+    ok_next:
+      - to: PILOT_RUNWAY_VACATED
+        trigger: ".*"
+        label: "Landing readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_LANDING_READBACK_INCORRECT
+        label: "Readback missing runway — controller corrects"
+
+    auto_transitions: []
+
+  ATC_LANDING_READBACK_INCORRECT:
+    role: atc
+    phase: tower
+    name: "ATC Corrects Landing Readback"
+    description: "Controller repeats the runway for the landing clearance readback"
+    say_template: "Negative, {{callsign}}, say again: runway {{runway}}, cleared to land"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_LANDING_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 4. Pilot reports the runway vacated after landing
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_RUNWAY_VACATED:
+    role: pilot
+    phase: tower
+    name: "Pilot Reports Runway Vacated"
+    description: "After landing, the pilot reports clear of the runway once past all holding positions"
+    expected_pilot_template: "{{callsign}}, runway vacated"
+    frequency_name: "Tower"
+
+    ok_next:
+      - to: ATC_VACATED_HANDOFF
+        trigger: "vacat|clear.*runway|runway.*clear|off.*runway"
+        label: "Pilot reported runway vacated"
+
+    bad_next:
+      - to: ATC_RUNWAY_VACATED_INCORRECT
+        label: "Incomplete vacated call — controller prompts"
+
+    auto_transitions: []
+
+  ATC_RUNWAY_VACATED_INCORRECT:
+    role: atc
+    phase: tower
+    name: "ATC Prompts for Runway Vacated Report"
+    description: "Controller asks the pilot to report when the runway is vacated"
+    say_template: "{{callsign}}, report runway vacated"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_RUNWAY_VACATED
+        label: "Prompt given — pilot to retry"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 5. Tower hands the pilot off to Ground
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_VACATED_HANDOFF:
+    role: atc
+    phase: tower
+    name: "Tower Hands Off to Ground"
+    description: "Tower acknowledges the runway is vacated and instructs the pilot to contact Ground"
+    say_template: "{{callsign}}, contact ground {{ground_freq}}"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_GROUND_FREQ_READBACK
+        label: "Ground handoff given — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: runway_vacated
+            value: true
+
+  PILOT_GROUND_FREQ_READBACK:
+    role: pilot
+    phase: tower
+    name: "Pilot Reads Back Ground Frequency"
+    description: "Pilot reads back the ground frequency and own callsign to confirm the frequency change"
+    expected_pilot_template: "{{ground_freq}}, {{callsign}}"
+    frequency_name: "Tower"
+
+    readback_required:
+      - ground_freq
+    readback_mode: simple
+
+    ok_next:
+      - to: TOWER_LANDING_COMPLETE
+        trigger: ".*"
+        label: "Ground frequency readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_GROUND_FREQ_READBACK_INCORRECT
+        label: "Readback missing ground frequency — controller corrects"
+
+    auto_transitions: []
+
+  ATC_GROUND_FREQ_READBACK_INCORRECT:
+    role: atc
+    phase: tower
+    name: "ATC Corrects Ground Frequency Readback"
+    description: "Controller repeats the ground frequency for the pilot"
+    say_template: "Negative, {{callsign}}, ground on {{ground_freq}}"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_GROUND_FREQ_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 6. End state — switching to Ground for taxi-in
+  # ─────────────────────────────────────────────────────────────────────────────
+  TOWER_LANDING_COMPLETE:
+    role: system
+    phase: tower
+    name: "Tower Landing Phase Complete"
+    description: "Landed and clear of the runway. Switch to ground {{ground_freq}} for taxi to stand."
+
+    ok_next: []
+    bad_next: []
+    auto_transitions: []

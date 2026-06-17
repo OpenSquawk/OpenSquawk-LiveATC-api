@@ -410,6 +410,55 @@ class TestReadbackReport:
         assert resp.readback_report == []
 
 
+class TestIfrArrivalChain:
+    """IFR arrival: approach → tower-landing → taxi-in."""
+
+    @pytest.fixture
+    def ifr_session(self):
+        from app.flow_loader import get_flow
+        return create_session(get_flow("ifr-arrival-v1"))
+
+    def _tx(self, sid, text):
+        return process_transmission(sid, DecisionRequest(pilot_utterance=text))
+
+    def test_full_ifr_arrival_walkthrough(self, ifr_session):
+        sid = ifr_session.session_id
+        r = self._tx(sid, "Munich Approach, DLH6RK, descending FL100, information K")
+        assert r.next_state_id == "PILOT_DESCENT_READBACK"
+        r = self._tx(sid, "descend altitude 5000 feet, QNH 1013, expect ILS runway 26L, DLH6RK")
+        assert r.next_state_id == "PILOT_APPROACH_READBACK"
+        r = self._tx(sid, "heading 280, descend 4000 feet, cleared ILS approach runway 26L, DLH6RK")
+        assert r.next_state_id == "PILOT_TOWER_FREQ_READBACK"
+        # Tower freq readback completes approach and chains to the tower-landing flow.
+        r = self._tx(sid, "118.700, DLH6RK")
+        assert r.active_flow == "ifr-tower-landing-v1"
+        assert r.next_state_id == "ESTABLISHED_CONTACT"
+
+    def test_tower_landing_chains_to_taxi_in(self, ifr_session):
+        sid = ifr_session.session_id
+        for utt in (
+            "Munich Approach, DLH6RK, descending FL100, information K",
+            "descend altitude 5000 feet, QNH 1013, DLH6RK",
+            "heading 280, descend 4000 feet, cleared ILS approach runway 26L, DLH6RK",
+            "118.700, DLH6RK",
+            "DLH6RK, established 26L ILS",
+            "cleared to land runway 26L, DLH6RK",
+            "DLH6RK, runway vacated",
+        ):
+            self._tx(sid, utt)
+        # Ground frequency readback completes tower-landing and chains to taxi-in.
+        r = self._tx(sid, "121.800, DLH6RK")
+        assert r.active_flow == "taxi-in-v1"
+        assert r.next_state_id == "CONTACT_GROUND"
+
+    def test_descent_readback_missing_qnh_loops(self, ifr_session):
+        sid = ifr_session.session_id
+        self._tx(sid, "DLH6RK, descending FL100, information K")
+        r = self._tx(sid, "descend altitude 5000 feet, DLH6RK")  # QNH missing
+        assert r.next_state_id == "PILOT_DESCENT_READBACK"
+        assert r.fallback_used is True
+
+
 class TestFlowInterrupt:
     """Tests for the MAYDAY / PAN-PAN flow interrupt mechanism."""
 
