@@ -46,7 +46,7 @@ states:
     phase: tower
     name: "Report Established to Tower"
     description: "Pilot calls Tower reporting established on the ILS for the landing runway"
-    expected_pilot_template: "{{callsign}}, established {{runway}} ILS"
+    expected_pilot_template: "{{callsign}}, established ILS runway {{runway}}"
     frequency_name: "Tower"
     allow_greeting: true
 
@@ -83,7 +83,7 @@ states:
     phase: tower
     name: "Tower Issues Landing Clearance"
     description: "Tower passes the surface wind and clears the aircraft to land"
-    say_template: "{{callsign}}, runway {{runway}}, surface wind {{surface_wind}}, cleared to land"
+    say_template: "{{callsign}}, wind {{surface_wind}}, runway {{runway}}, cleared to land"
     frequency_name: "Tower"
 
     ok_next: []

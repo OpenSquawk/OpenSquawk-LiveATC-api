@@ -421,14 +421,21 @@ class TestIfrArrivalChain:
     def _tx(self, sid, text):
         return process_transmission(sid, DecisionRequest(pilot_utterance=text))
 
+    # Full-fidelity approach readbacks in sequence.
+    _APPROACH_READBACKS = (
+        ("Munich Approach, DLH6RK, descending FL100, information K", "PILOT_STAR_READBACK"),
+        ("Cleared Rokil one alpha arrival, descend via STAR to FL80, expect ILS runway 26L, DLH6RK", "PILOT_DESCENT_READBACK"),
+        ("Descend altitude 5000 feet, QNH 1013, transition level 70, speed 220 knots, DLH6RK", "PILOT_VECTOR_READBACK"),
+        ("Heading 320, descend 4000 feet, speed 180 knots, DLH6RK", "PILOT_ILS_READBACK"),
+        ("Heading 290, cleared ILS approach runway 26L, speed 160 knots until 4 DME, DLH6RK", "PILOT_TOWER_FREQ_READBACK"),
+    )
+
     def test_full_ifr_arrival_walkthrough(self, ifr_session):
         sid = ifr_session.session_id
-        r = self._tx(sid, "Munich Approach, DLH6RK, descending FL100, information K")
-        assert r.next_state_id == "PILOT_DESCENT_READBACK"
-        r = self._tx(sid, "descend altitude 5000 feet, QNH 1013, expect ILS runway 26L, DLH6RK")
-        assert r.next_state_id == "PILOT_APPROACH_READBACK"
-        r = self._tx(sid, "heading 280, descend 4000 feet, cleared ILS approach runway 26L, DLH6RK")
-        assert r.next_state_id == "PILOT_TOWER_FREQ_READBACK"
+        for utt, expected_state in self._APPROACH_READBACKS:
+            r = self._tx(sid, utt)
+            assert r.next_state_id == expected_state, (utt, r.next_state_id)
+            assert r.fallback_used is False, utt
         # Tower freq readback completes approach and chains to the tower-landing flow.
         r = self._tx(sid, "118.700, DLH6RK")
         assert r.active_flow == "ifr-tower-landing-v1"
@@ -436,12 +443,11 @@ class TestIfrArrivalChain:
 
     def test_tower_landing_chains_to_taxi_in(self, ifr_session):
         sid = ifr_session.session_id
+        for utt, _ in self._APPROACH_READBACKS:
+            self._tx(sid, utt)
         for utt in (
-            "Munich Approach, DLH6RK, descending FL100, information K",
-            "descend altitude 5000 feet, QNH 1013, DLH6RK",
-            "heading 280, descend 4000 feet, cleared ILS approach runway 26L, DLH6RK",
             "118.700, DLH6RK",
-            "DLH6RK, established 26L ILS",
+            "DLH6RK, established ILS runway 26L",
             "cleared to land runway 26L, DLH6RK",
             "DLH6RK, runway vacated",
         ):
@@ -451,10 +457,12 @@ class TestIfrArrivalChain:
         assert r.active_flow == "taxi-in-v1"
         assert r.next_state_id == "CONTACT_GROUND"
 
-    def test_descent_readback_missing_qnh_loops(self, ifr_session):
+    def test_descent_readback_missing_transition_level_loops(self, ifr_session):
         sid = ifr_session.session_id
         self._tx(sid, "DLH6RK, descending FL100, information K")
-        r = self._tx(sid, "descend altitude 5000 feet, DLH6RK")  # QNH missing
+        self._tx(sid, "Cleared Rokil one alpha arrival, descend via STAR to FL80, DLH6RK")
+        # Omit the transition level — a mandatory readback element.
+        r = self._tx(sid, "descend altitude 5000 feet, QNH 1013, speed 220 knots, DLH6RK")
         assert r.next_state_id == "PILOT_DESCENT_READBACK"
         assert r.fallback_used is True
 
