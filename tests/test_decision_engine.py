@@ -410,6 +410,32 @@ class TestReadbackReport:
         assert resp.readback_report == []
 
 
+class TestIfrEnrouteChain:
+    """Area Control en-route descent chains into the approach flow."""
+
+    @pytest.fixture
+    def enroute_session(self):
+        from app.flow_loader import get_flow
+        return create_session(get_flow("ifr-enroute-arrival-v1"))
+
+    def _tx(self, sid, text):
+        return process_transmission(sid, DecisionRequest(pilot_utterance=text))
+
+    def test_enroute_descent_chains_to_approach(self, enroute_session):
+        sid = enroute_session.session_id
+        r = self._tx(sid, "London Control, DLH6RK, FL360")
+        assert r.next_state_id == "PILOT_DESCENT_1_READBACK"
+        r = self._tx(sid, "Descend flight level 240, DLH6RK")
+        assert r.next_state_id == "PILOT_DESCENT_2_READBACK"
+        r = self._tx(sid, "Descend flight level 100, expect ILS runway 26L, DLH6RK")
+        assert r.next_state_id == "PILOT_APPROACH_FREQ_READBACK"
+        # Approach frequency readback completes en-route and chains to the approach flow.
+        r = self._tx(sid, "119.900, DLH6RK")
+        assert r.active_flow == "ifr-arrival-v1"
+        assert r.next_state_id == "INITIAL_CONTACT"
+        assert r.fallback_used is False
+
+
 class TestIfrArrivalChain:
     """IFR arrival: approach → tower-landing → taxi-in."""
 

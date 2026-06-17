@@ -1,0 +1,273 @@
+slug: ifr-enroute-arrival-v1
+schema_version: "2.0"
+name: "IFR Arrival — Enroute Descent (Area Control)"
+description: "Area Control / Radar phase of an IFR arrival: pilot checks in at cruise level, is given a stepped descent toward the terminal area with the approach to expect, and is handed off to Approach"
+
+start_state: INITIAL_CONTACT
+end_states:
+  - ENROUTE_COMPLETE
+
+# After the descent, the pilot checks in with Approach for the STAR and ILS.
+next_flow: ifr-arrival-v1
+
+entry_mode: main
+
+variables:
+  callsign:
+    type: string
+    initial: "DLH6RK"
+    mutable_by: action_only
+  cruise_level:
+    type: string
+    initial: "FL360"
+    mutable_by: action_only
+  descent_level_1:
+    type: string
+    initial: "FL240"
+    mutable_by: action_only
+  # Final enroute level — matches the level the pilot reports "descending" to on
+  # first contact with Approach in the next flow.
+  descent_level_2:
+    type: string
+    initial: "FL100"
+    mutable_by: action_only
+  approach_type:
+    type: string
+    initial: "ILS"
+    mutable_by: action_only
+  runway:
+    type: string
+    initial: "26L"
+    mutable_by: action_only
+  approach_freq:
+    type: string
+    initial: "119.900"
+    mutable_by: action_only
+
+flags:
+  descent_initiated:
+    initial: false
+  handed_to_approach:
+    initial: false
+
+states:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 1. Pilot checks in with Area Control at cruise level
+  # ─────────────────────────────────────────────────────────────────────────────
+  INITIAL_CONTACT:
+    role: pilot
+    phase: enroute
+    name: "Initial Contact with Area Control"
+    description: "Pilot checks in with the arrival Area Control sector, reporting callsign and current cruise level"
+    expected_pilot_template: "{{callsign}}, {{cruise_level}}"
+    frequency_name: "Center"
+    allow_greeting: true
+
+    ok_next:
+      - to: ATC_DESCENT_1
+        trigger: "FL|flight level|level|maintaining|with you|inbound|request|descend"
+        label: "Pilot checked in at cruise level"
+
+    bad_next:
+      - to: ATC_INITIAL_CONTACT_INCORRECT
+        label: "Incomplete check-in — controller prompts for callsign and level"
+
+    auto_transitions: []
+
+  ATC_INITIAL_CONTACT_INCORRECT:
+    role: atc
+    phase: enroute
+    name: "ATC Prompts for Correct Check-in"
+    description: "Controller asks the pilot to pass callsign and present level"
+    say_template: "{{callsign}}, say again, pass your callsign and level"
+    frequency_name: "Center"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: INITIAL_CONTACT
+        label: "Prompt given — pilot to retry check-in"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 2. Area Control issues the first descent
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_DESCENT_1:
+    role: atc
+    phase: enroute
+    name: "Area Control Issues First Descent"
+    description: "Controller starts the descent toward the terminal area"
+    say_template: "{{callsign}}, descend {{descent_level_1}}"
+    frequency_name: "Center"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_DESCENT_1_READBACK
+        label: "First descent issued — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: descent_initiated
+            value: true
+
+  PILOT_DESCENT_1_READBACK:
+    role: pilot
+    phase: enroute
+    name: "Pilot Reads Back First Descent"
+    description: "Pilot reads back the cleared flight level"
+    expected_pilot_template: "Descend {{descent_level_1}}, {{callsign}}"
+    frequency_name: "Center"
+
+    readback_required:
+      - descent_level_1
+    readback_mode: simple
+
+    ok_next:
+      - to: ATC_DESCENT_2
+        trigger: ".*"
+        label: "First descent readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_DESCENT_1_INCORRECT
+        label: "Readback missing flight level — controller corrects"
+
+    auto_transitions: []
+
+  ATC_DESCENT_1_INCORRECT:
+    role: atc
+    phase: enroute
+    name: "ATC Corrects First Descent Readback"
+    description: "Controller repeats the cleared flight level"
+    say_template: "Negative, {{callsign}}, say again: descend {{descent_level_1}}"
+    frequency_name: "Center"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_DESCENT_1_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 3. Area Control descends further and states the approach to expect
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_DESCENT_2:
+    role: atc
+    phase: enroute
+    name: "Area Control Continues Descent"
+    description: "Controller continues the descent toward the terminal area and states the approach to expect"
+    say_template: "{{callsign}}, descend {{descent_level_2}}, expect {{approach_type}} approach runway {{runway}}"
+    frequency_name: "Center"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_DESCENT_2_READBACK
+        label: "Second descent issued — await pilot readback"
+
+  PILOT_DESCENT_2_READBACK:
+    role: pilot
+    phase: enroute
+    name: "Pilot Reads Back Second Descent"
+    description: "Pilot reads back the cleared flight level and the approach to expect"
+    expected_pilot_template: "Descend {{descent_level_2}}, expect {{approach_type}} runway {{runway}}, {{callsign}}"
+    frequency_name: "Center"
+
+    readback_required:
+      - descent_level_2
+    readback_mode: simple
+
+    ok_next:
+      - to: ATC_APPROACH_HANDOFF
+        trigger: ".*"
+        label: "Second descent readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_DESCENT_2_INCORRECT
+        label: "Readback missing flight level — controller corrects"
+
+    auto_transitions: []
+
+  ATC_DESCENT_2_INCORRECT:
+    role: atc
+    phase: enroute
+    name: "ATC Corrects Second Descent Readback"
+    description: "Controller repeats the cleared flight level"
+    say_template: "Negative, {{callsign}}, say again: descend {{descent_level_2}}"
+    frequency_name: "Center"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_DESCENT_2_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 4. Area Control hands the pilot off to Approach
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_APPROACH_HANDOFF:
+    role: atc
+    phase: enroute
+    name: "Area Control Hands Off to Approach"
+    description: "Controller instructs the pilot to contact Approach"
+    say_template: "{{callsign}}, contact Approach {{approach_freq}}"
+    frequency_name: "Center"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_APPROACH_FREQ_READBACK
+        label: "Approach handoff given — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: handed_to_approach
+            value: true
+
+  PILOT_APPROACH_FREQ_READBACK:
+    role: pilot
+    phase: enroute
+    name: "Pilot Reads Back Approach Frequency"
+    description: "Pilot reads back the approach frequency and own callsign to confirm the frequency change"
+    expected_pilot_template: "{{approach_freq}}, {{callsign}}"
+    frequency_name: "Center"
+
+    readback_required:
+      - approach_freq
+    readback_mode: simple
+
+    ok_next:
+      - to: ENROUTE_COMPLETE
+        trigger: ".*"
+        label: "Approach frequency readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_APPROACH_FREQ_INCORRECT
+        label: "Readback missing approach frequency — controller corrects"
+
+    auto_transitions: []
+
+  ATC_APPROACH_FREQ_INCORRECT:
+    role: atc
+    phase: enroute
+    name: "ATC Corrects Approach Frequency Readback"
+    description: "Controller repeats the approach frequency for the pilot"
+    say_template: "Negative, {{callsign}}, Approach on {{approach_freq}}"
+    frequency_name: "Center"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_APPROACH_FREQ_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 5. End state — switching to Approach
+  # ─────────────────────────────────────────────────────────────────────────────
+  ENROUTE_COMPLETE:
+    role: system
+    phase: enroute
+    name: "Enroute Descent Complete"
+    description: "Descending toward the terminal area. Switch to Approach {{approach_freq}}."
+
+    ok_next: []
+    bad_next: []
+    auto_transitions: []
