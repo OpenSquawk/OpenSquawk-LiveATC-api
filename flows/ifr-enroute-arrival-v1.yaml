@@ -17,6 +17,11 @@ variables:
     type: string
     initial: "DLH6RK"
     mutable_by: action_only
+  # Area Control sector name the pilot calls (e.g. "München Radar", "Langen Radar").
+  station:
+    type: string
+    initial: "Radar"
+    mutable_by: action_only
   cruise_level:
     type: string
     initial: "FL360"
@@ -59,8 +64,8 @@ states:
     role: pilot
     phase: enroute
     name: "Initial Contact with Area Control"
-    description: "Pilot checks in with the arrival Area Control sector, reporting callsign and current cruise level"
-    expected_pilot_template: "{{callsign}}, {{cruise_level}}"
+    description: "Pilot checks in with the arrival Area Control sector, calling the station with callsign and current cruise level"
+    expected_pilot_template: "{{station}}, {{callsign}}, {{cruise_level}}"
     frequency_name: "Center"
     allow_greeting: true
 
@@ -95,9 +100,9 @@ states:
   ATC_DESCENT_1:
     role: atc
     phase: enroute
-    name: "Area Control Issues First Descent"
-    description: "Controller starts the descent toward the terminal area"
-    say_template: "{{callsign}}, descend {{descent_level_1}}"
+    name: "Area Control Identifies and Issues First Descent"
+    description: "Controller acknowledges radar contact (identifies the aircraft) and starts the descent toward the terminal area"
+    say_template: "{{callsign}}, identified, descend {{descent_level_1}}"
     frequency_name: "Center"
 
     ok_next: []
