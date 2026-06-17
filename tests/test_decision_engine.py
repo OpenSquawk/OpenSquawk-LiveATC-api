@@ -338,6 +338,32 @@ class TestFuzzySidReadback:
         assert _fuzzy_ident_match("TOBAK2E", "runway two echo terminal") is None
 
 
+class TestIcaoDigitVariants:
+    """Numeric readbacks spelled with ICAO radio digits (wun, tree, fife, niner)."""
+
+    def test_qnh_with_icao_digit_variants(self):
+        from app.readback_evaluator import evaluate_readback_simple
+        ok, missing, rep = evaluate_readback_simple(
+            "QNH wun zero wun tree, face west, Lufthansa six Romeo Kilo",
+            ["qnh", "pushback_direction"],
+            {"qnh": "1013", "pushback_direction": "west"},
+        )
+        assert ok and missing == []
+        assert rep[0]["matched_via"] == "digit_phonetic"
+
+    def test_squawk_with_icao_digit_variants(self):
+        from app.readback_evaluator import evaluate_readback_simple
+        ok, _, _ = evaluate_readback_simple(
+            "squawk too tree four wun", ["squawk"], {"squawk": "2341"})
+        assert ok
+
+    def test_wrong_digit_still_rejected(self):
+        from app.readback_evaluator import evaluate_readback_simple
+        ok, missing, _ = evaluate_readback_simple(
+            "QNH wun zero wun four", ["qnh"], {"qnh": "1013"})
+        assert not ok and missing == ["qnh"]
+
+
 class TestReadbackReport:
     """Per-field readback diagnostics surfaced on the response."""
 
