@@ -363,6 +363,21 @@ class TestIcaoDigitVariants:
             "QNH wun zero wun four", ["qnh"], {"qnh": "1013"})
         assert not ok and missing == ["qnh"]
 
+    def test_frequency_with_spoken_decimal_and_icao_digits(self):
+        from app.readback_evaluator import evaluate_readback_simple
+        ok, missing, rep = evaluate_readback_simple(
+            "wun too fife decimal tree fife zero, Lufthansa six Romeo Kilo",
+            ["departure_freq"], {"departure_freq": "125.350"},
+        )
+        assert ok and missing == []
+        assert rep[0]["matched_via"] == "digit_phonetic"
+
+    def test_frequency_wrong_digit_rejected(self):
+        from app.readback_evaluator import evaluate_readback_simple
+        ok, _, _ = evaluate_readback_simple(
+            "wun too fife decimal tree fife wun", ["f"], {"f": "125.350"})
+        assert not ok
+
 
 class TestReadbackReport:
     """Per-field readback diagnostics surfaced on the response."""

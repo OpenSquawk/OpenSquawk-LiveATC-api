@@ -57,6 +57,11 @@ _DIGIT_WORDS = [
     'five', 'six', 'seven', 'eight', 'nine',
 ]
 
+# Separator between digits in a spoken sequence: whitespace/punctuation, and
+# optionally a spoken decimal point ("decimal"/"point"/"dot") so a frequency
+# read "wun too fife decimal tree fife zero" matches the digit run "125350".
+_DIGIT_SEQ_SEP = r'[\s,.\-]*(?:(?:decimal|point|dot|comma)[\s,.\-]*)?'
+
 
 # ---------------------------------------------------------------------------
 # Spoken-form generators
@@ -328,11 +333,13 @@ def evaluate_readback_simple(
 
         # 1b. Digit-by-digit phonetic, accepting ICAO radio variants
         #     (wun, tree, fife, niner, fower …) which the static spoken forms
-        #     above don't include — e.g. QNH 1013 read as "wun zero wun tree".
+        #     above don't include — e.g. QNH 1013 read as "wun zero wun tree",
+        #     or frequency 125.350 as "wun too fife decimal tree fife zero"
+        #     (the separator optionally swallows a spoken "decimal"/"point").
         if not matched and expected_str:
             digits_only = re.sub(r'\D', '', expected_str)
             if len(digits_only) >= 2:
-                seq = r'[\s,.\-]*'.join(_DIGIT_PHONETICS[d] for d in digits_only)
+                seq = _DIGIT_SEQ_SEP.join(_DIGIT_PHONETICS[d] for d in digits_only)
                 if re.search(seq, utterance, re.IGNORECASE):
                     matched = True
                     matched_via = "digit_phonetic"
