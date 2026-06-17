@@ -316,6 +316,17 @@ class TestFuzzySidReadback:
         from app.readback_evaluator import _fuzzy_ident_match
         assert _fuzzy_ident_match("MARUN7F", "maroon seven foxtrot") is not None
 
+    def test_revision_digit_spoken_as_to(self):
+        from app.readback_evaluator import _fuzzy_ident_match
+        # "two" is routinely transcribed as the homophone "to".
+        for u in ("CLEARED TOBACK TO ECHO", "Clear TODAC to ECHO", "Tobac to Echo"):
+            assert _fuzzy_ident_match("TOBAK2E", u) is not None, u
+
+    def test_to_inside_word_is_not_a_digit(self):
+        from app.readback_evaluator import _fuzzy_ident_match
+        # The "to" inside "tobacco" must not count as the revision digit.
+        assert _fuzzy_ident_match("TOBAK2E", "tobacco echo") is None
+
     def test_wrong_digit_or_letter_does_not_match(self):
         from app.readback_evaluator import _fuzzy_ident_match
         # Right stem, wrong revision digit / final letter → no match.

@@ -207,9 +207,26 @@ def _value_is_icao_ident(value: str) -> bool:
 # digit and letter strictly (digit/word, letter/phonetic), the stem fuzzily
 # via jellyfish (Metaphone equality or a high Jaro-Winkler similarity).
 
-# Jaro-Winkler floor for accepting a stem.  tobacco~tobak=0.87, maroon~marun=0.88
-# (the latter also caught by Metaphone), while unrelated words sit at <=0.55.
-_STEM_SIMILARITY_THRESHOLD = 0.84
+# Jaro-Winkler floor for accepting a stem.  tobak~toback=0.97, tobak~tobac=0.92,
+# tobak~todac=0.79, while unrelated words sit at <=0.55.  The digit+letter anchors
+# corroborate the match, so a fairly low floor stays safe from false positives.
+_STEM_SIMILARITY_THRESHOLD = 0.78
+
+# STT homophones for spoken revision digits — "two" is routinely transcribed as
+# "to", "four" as "for", "zero" as "oh", etc.  Used (token-based, so "to" must be
+# a whole word, not the "to" inside "tobacco") when checking the SID revision.
+_DIGIT_HOMOPHONES: Dict[str, set] = {
+    '0': {'0', 'zero', 'oh', 'o'},
+    '1': {'1', 'one', 'won'},
+    '2': {'2', 'two', 'too', 'to'},
+    '3': {'3', 'three', 'tree'},
+    '4': {'4', 'four', 'for', 'fore', 'fower'},
+    '5': {'5', 'five', 'fife'},
+    '6': {'6', 'six'},
+    '7': {'7', 'seven'},
+    '8': {'8', 'eight', 'ate'},
+    '9': {'9', 'nine', 'niner'},
+}
 
 
 def _decompose_ident(value: str) -> Optional[Tuple[str, str, str]]:
@@ -234,10 +251,17 @@ def _fuzzy_ident_match(value: str, utterance: str) -> Optional[str]:
     if not re.search(rf'\b(?:{letter_word}|{re.escape(letter.lower())})\b', utterance, re.IGNORECASE):
         return None
 
-    # Digit(s): each as digit or spoken word, contiguous (allowing separators).
-    digit_pat = r'[\s,.\-]*'.join(_DIGIT_PHONETICS.get(d, re.escape(d)) for d in digits)
-    if not re.search(digit_pat, utterance, re.IGNORECASE):
-        return None
+    # Digit(s): each revision digit must appear, in order, as a digit or one of
+    # its spoken homophones.  Token-based so "to" (the homophone of two) is only
+    # accepted as a whole word, never the "to" inside "tobacco".
+    tokens = re.findall(r'[a-z]+|\d', utterance.lower())
+    search_from = 0
+    for d in digits:
+        forms = _DIGIT_HOMOPHONES.get(d, {d})
+        found_at = next((i for i in range(search_from, len(tokens)) if tokens[i] in forms), None)
+        if found_at is None:
+            return None
+        search_from = found_at + 1
 
     # Stem: best spoken word by Metaphone equality or Jaro-Winkler similarity.
     stem_l = stem.lower()
