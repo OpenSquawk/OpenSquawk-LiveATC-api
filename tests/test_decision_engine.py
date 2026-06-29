@@ -669,3 +669,46 @@ class TestReadbackSkipLandsOnPilotState:
         assert resp.next_state_id == "REQUEST_TAXI"
         assert resp.controller_say_rendered, "skip notice must not be empty/None"
         assert "continuing for now" in resp.controller_say_rendered.lower()
+
+
+# Every readback state across all flows whose 3x-skip target is a template-less
+# pilot state — the exact shape that crashed pre-fix. Belt-and-suspenders: each
+# must reach its skip without raising and announce the notice.
+SKIP_TO_PILOT_CASES = [
+    ("taxi", "PILOT_STARTUP_READBACK", "REQUEST_PUSHBACK"),
+    ("taxi", "PILOT_STARTUP_PUSHBACK_READBACK", "REQUEST_TAXI"),
+    ("taxi", "PILOT_PUSHBACK_READBACK", "REQUEST_TAXI"),
+    ("ifr-tower-landing", "PILOT_LANDING_READBACK", "PILOT_RUNWAY_VACATED"),
+    ("vfr-arrival", "PILOT_ENTER_CTR_READBACK", "REPORT_ENTRY_POINT"),
+    ("vfr-circuit-landing", "PILOT_CIRCUIT_READBACK", "REPORT_DOWNWIND"),
+    ("vfr-circuit-landing", "PILOT_LANDING_READBACK", "PILOT_RUNWAY_VACATED"),
+]
+
+
+@pytest.mark.parametrize("flow_slug,state_id,expected_target", SKIP_TO_PILOT_CASES)
+def test_3x_skip_to_pilot_state_never_crashes(flow_slug, state_id, expected_target):
+    from app.decision_engine import _MAX_READBACK_ATTEMPTS
+    from app.flow_loader import get_flow
+    from app.session_store import get_session, save_session
+
+    flow = get_flow(flow_slug)
+    session = create_session(flow)
+    # Force every required field to an unmatchable sentinel so the readback
+    # always fails, driving the give-up regardless of the flow's defaults.
+    for field in flow.states[state_id].readback_required:
+        session.variables[field] = "ZZUNMATCHABLE"
+    save_session(session)
+
+    wrong = DecisionRequest(pilot_utterance="say again please now")
+    resp = None
+    for _ in range(_MAX_READBACK_ATTEMPTS):
+        # Pin the cursor to the readback state before each attempt so the test
+        # exercises the skip independent of each flow's correction loop-back.
+        s = get_session(session.session_id)
+        s.current_state = state_id
+        save_session(s)
+        resp = process_transmission(session.session_id, wrong)  # must never raise
+
+    assert resp.next_state_id == expected_target
+    assert resp.controller_say_rendered, "skip notice must not be empty/None"
+    assert "continuing for now" in resp.controller_say_rendered.lower()
