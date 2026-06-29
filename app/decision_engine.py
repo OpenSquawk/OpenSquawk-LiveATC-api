@@ -46,6 +46,20 @@ _EMERGENCY_RE = re.compile(r"mayday|pan[.\s]pan", re.IGNORECASE)
 _EMERGENCY_FLOW = "emergency-v1"
 _EMERGENCY_ENTRY = "MAYDAY_DECLARED"
 
+# Pilot-initiated cancellation of an active emergency.  ICAO Annex 10 / CAP 413:
+# the pilot transmits "CANCEL DISTRESS" (or "CANCEL MAYDAY" / "CANCEL PAN"); ATC
+# acknowledges and broadcasts "DISTRESS TRAFFIC ENDED" to all stations.  Like the
+# MAYDAY intercept this is engine-global, so it works after the emergency flow has
+# resumed the parent flow (where the pilot would actually stand down).
+_CANCEL_EMERGENCY_RE = re.compile(
+    r"\bcancel\b.{0,24}\b(?:distress|mayday|pan|emergency)\b"
+    r"|\b(?:distress|mayday|pan|emergency)\b.{0,24}\bcancel\b",
+    re.IGNORECASE,
+)
+_DISTRESS_ENDED_REPLY = (
+    "{{callsign}}, roger, distress cancelled. All stations, DISTRESS TRAFFIC ENDED."
+)
+
 
 # ---------------------------------------------------------------------------
 # Global greeting intercept
@@ -64,6 +78,11 @@ _GREETING_RE = re.compile(
     re.IGNORECASE,
 )
 _GREETING_REPLY = "{{callsign}}, pass your message"
+
+# Stop looping a readback the pilot can't get right (e.g. STT cannot transcribe a
+# waypoint); after this many failed attempts ATC gives up and moves on.
+_MAX_READBACK_ATTEMPTS = 3
+_READBACK_SKIP_NOTICE = "{{callsign}}, readback not correct, continuing for now. "
 
 
 def _is_greeting(utterance: str) -> bool:
@@ -336,7 +355,11 @@ def process_transmission(
     match_reason = "no_match"
     used_bad_next = False
 
-    if _EMERGENCY_RE.search(request.pilot_utterance) and session.active_flow != _EMERGENCY_FLOW:
+    if (
+        _EMERGENCY_RE.search(request.pilot_utterance)
+        and not _CANCEL_EMERGENCY_RE.search(request.pilot_utterance)
+        and session.active_flow != _EMERGENCY_FLOW
+    ):
         try:
             emg_flow = get_flow(_EMERGENCY_FLOW)
             if _EMERGENCY_ENTRY in emg_flow.states:
@@ -348,6 +371,11 @@ def process_transmission(
                     label="Global MAYDAY / PAN-PAN emergency override",
                 )
                 match_reason = "emergency_override"
+                # Mark the session as in distress so a later "cancel distress"
+                # can be recognised even after the emergency flow has resumed the
+                # parent flow.  Stored in variables (carried across flow chains),
+                # not flags (which are bool-typed and flow-scoped).
+                session.variables["_emergency_active"] = True
                 trace.append(_trace(
                     "emergency_override",
                     f"Global MAYDAY/PAN-PAN — suspending '{flow.slug}' → "
@@ -355,6 +383,31 @@ def process_transmission(
                 ))
         except KeyError:
             logger.warning("Emergency flow '%s' not loaded — MAYDAY not intercepted", _EMERGENCY_FLOW)
+
+    # --- Step 5b-ii: Global emergency cancellation ("DISTRESS TRAFFIC ENDED") ---
+    # If the session is in distress and the pilot stands the emergency down, ATC
+    # acknowledges and ends the distress traffic without leaving the current state.
+    if (
+        selected_transition is None
+        and session.variables.get("_emergency_active")
+        and session.active_flow != _EMERGENCY_FLOW
+        and _CANCEL_EMERGENCY_RE.search(request.pilot_utterance)
+    ):
+        session.variables["_emergency_active"] = False
+        trace.append(_trace(
+            "emergency_cancel",
+            "Pilot cancelled distress — replying 'DISTRESS TRAFFIC ENDED'",
+        ))
+        _log_result(
+            session_id=session_id, state_in=current_state.id,
+            state_out=current_state.id, match_reason="emergency_cancel",
+            auto_advanced=[], fallback_used=False, fallback_reason=None,
+            say_template=_DISTRESS_ENDED_REPLY, trace=trace,
+        )
+        return _build_stay_response(
+            session, current_state, _DISTRESS_ENDED_REPLY,
+            request.pilot_utterance, "emergency_cancel", trace,
+        )
 
     # --- Step 5c: Global greeting intercept (optional courtesy call) ---
     # Only at initial-contact states, and only when the utterance does NOT also
@@ -406,6 +459,7 @@ def process_transmission(
     # --- Step 7: Readback evaluation (if required) ---
     # Emergency overrides skip readback entirely — MAYDAY / PAN-PAN always takes
     # priority regardless of whether the required fields are present.
+    skip_readback_notice = False
     if (
         selected_transition is not None
         and match_reason != "emergency_override"
@@ -418,19 +472,34 @@ def process_transmission(
             current_state.readback_mode,
             session.variables,
         )
+        _rb_fail_key = f"_rb_fail::{current_state.id}"
         if passed:
+            session.variables.pop(_rb_fail_key, None)
             trace.append(_trace("readback_pass", f"Readback OK — fields present: {current_state.readback_required}"))
         else:
             recognised = ", ".join(
                 f"{r['field']}={r['expected']!r}→{'✓ ' + str(r['matched_via']) if r['matched'] else '✗ missing'}"
                 for r in readback_report
             )
-            trace.append(_trace("readback_fail", f"Readback missing fields: {missing} — using bad_next | {recognised}"))
-            # Override: push to bad_next
-            if current_state.bad_next:
+            fail_count = int(session.variables.get(_rb_fail_key, 0) or 0) + 1
+            session.variables[_rb_fail_key] = fail_count
+            # After too many failed attempts, give up on the readback and advance
+            # anyway (e.g. STT can't transcribe a waypoint), so the pilot isn't
+            # trapped looping forever.  ATC says it is moving on.
+            if fail_count >= _MAX_READBACK_ATTEMPTS and current_state.ok_next:
+                selected_transition = current_state.ok_next[0]
+                skip_readback_notice = True
+                session.variables.pop(_rb_fail_key, None)
+                trace.append(_trace(
+                    "readback_skip",
+                    f"Readback failed {fail_count}x — skipping → '{selected_transition.to}' | {recognised}",
+                ))
+            elif current_state.bad_next:
+                # Override: push to bad_next
                 selected_transition = current_state.bad_next[0]
                 fallback_used = True
                 fallback_reason = f"readback_missing: {missing}"
+                trace.append(_trace("readback_fail", f"Readback missing fields: {missing} (attempt {fail_count}) — using bad_next | {recognised}"))
             else:
                 trace.append(_trace("readback_fail", "No bad_next available; proceeding anyway"))
 
@@ -564,6 +633,13 @@ def process_transmission(
     # Use ATC speech collected during auto-advance; fall back to the final state's template.
     say_template = atc_say_template or next_state.say_template
     rendered = render_template(say_template, session.variables)
+    # When a readback was given up on, prefix the next instruction with a notice
+    # so the pilot knows ATC moved on without a correct readback.
+    if skip_readback_notice:
+        # Drop a leading "Readback correct" confirmation from the next instruction
+        # so it doesn't contradict the skip notice we're prepending.
+        rendered = re.sub(r"^\s*readback correct[\s,.:!-]*", "", rendered, flags=re.IGNORECASE)
+        rendered = render_template(_READBACK_SKIP_NOTICE, session.variables) + rendered
     expected = render_template(next_state.expected_pilot_template, session.variables)
 
     # Session is complete when it rests at a terminal end state (no further
