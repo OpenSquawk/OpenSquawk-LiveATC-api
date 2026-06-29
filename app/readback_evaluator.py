@@ -24,10 +24,14 @@ import jellyfish
 # ICAO phonetic alphabet + digit pronunciation tables
 # ---------------------------------------------------------------------------
 
+# Values are regex fragments (used inside larger patterns), so spelling variants
+# that STT routinely emits are accepted via alternations: "alfa" for alpha,
+# "juliett" for juliet.  Alternations are wrapped in (?:…) so they stay atomic
+# when joined into a sequential identifier pattern.
 _LETTER_PHONETICS: Dict[str, str] = {
-    'A': 'alpha',    'B': 'bravo',    'C': 'charlie', 'D': 'delta',
+    'A': '(?:alpha|alfa)', 'B': 'bravo',  'C': 'charlie', 'D': 'delta',
     'E': 'echo',     'F': 'foxtrot',  'G': 'golf',    'H': 'hotel',
-    'I': 'india',    'J': 'juliet',   'K': 'kilo',    'L': 'lima',
+    'I': 'india',    'J': '(?:juliet|juliett)', 'K': 'kilo', 'L': 'lima',
     'M': 'mike',     'N': 'november', 'O': 'oscar',   'P': 'papa',
     'Q': 'quebec',   'R': 'romeo',    'S': 'sierra',  'T': 'tango',
     'U': 'uniform',  'V': 'victor',   'W': 'whiskey', 'X': 'x.?ray',
@@ -61,6 +65,14 @@ _DIGIT_WORDS = [
 # optionally a spoken decimal point ("decimal"/"point"/"dot") so a frequency
 # read "wun too fife decimal tree fife zero" matches the digit run "125350".
 _DIGIT_SEQ_SEP = r'[\s,.\-]*(?:(?:decimal|point|dot|comma)[\s,.\-]*)?'
+
+# Any single spoken digit (bare digit, English word, or ICAO variant). Used as a
+# negative-lookahead anchor so a trailing-zero-dropped frequency only matches
+# when no further digit follows (else a wrong final digit would match the prefix).
+_ANY_DIGIT_WORD = (
+    r'(?:[0-9]|zero|one|wun|won|two|too|three|tree|four|fower|'
+    r'five|fife|six|seven|eight|nine|niner)'
+)
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +181,13 @@ def spoken_forms(value: str) -> List[str]:
 
     if re.match(r'^FL\d+$', v, re.IGNORECASE):
         forms.append(_flight_level_speak(v))
+        # Round flight levels are spoken in "hundreds": FL100 → "flight level
+        # one hundred", FL200 → "two hundred".  Accept with or without the
+        # leading "flight level".
+        fl_num = int(re.sub(r'^FL', '', v, flags=re.IGNORECASE))
+        if fl_num and fl_num % 100 == 0 and fl_num // 100 < 10:
+            forms.append(f'flight level {_DIGIT_WORDS[fl_num // 100]} hundred')
+            forms.append(f'{_DIGIT_WORDS[fl_num // 100]} hundred')
 
     if re.match(r'^\d{2}[LCR]?$', v, re.IGNORECASE):
         s = _runway_speak(v)
@@ -218,11 +237,13 @@ def _value_is_icao_ident(value: str) -> bool:
 _STEM_SIMILARITY_THRESHOLD = 0.78
 
 # STT homophones for spoken revision digits — "two" is routinely transcribed as
-# "to", "four" as "for", "zero" as "oh", etc.  Used (token-based, so "to" must be
-# a whole word, not the "to" inside "tobacco") when checking the SID revision.
+# "to", "four" as "for", "zero" as "oh", etc.  Includes the ICAO radio variants
+# (wun, tree, fife, niner, fower) so a SID read "Cindy wun Alfa" matches CINDY1A.
+# Used (token-based, so "to" must be a whole word, not the "to" inside "tobacco")
+# when checking the SID revision.
 _DIGIT_HOMOPHONES: Dict[str, set] = {
     '0': {'0', 'zero', 'oh', 'o'},
-    '1': {'1', 'one', 'won'},
+    '1': {'1', 'one', 'won', 'wun'},
     '2': {'2', 'two', 'too', 'to'},
     '3': {'3', 'three', 'tree'},
     '4': {'4', 'four', 'for', 'fore', 'fower'},
@@ -338,11 +359,25 @@ def evaluate_readback_simple(
         #     (the separator optionally swallows a spoken "decimal"/"point").
         if not matched and expected_str:
             digits_only = re.sub(r'\D', '', expected_str)
-            if len(digits_only) >= 2:
-                seq = _DIGIT_SEQ_SEP.join(_DIGIT_PHONETICS[d] for d in digits_only)
-                if re.search(seq, utterance, re.IGNORECASE):
-                    matched = True
-                    matched_via = "digit_phonetic"
+            # Frequencies are routinely read without the trailing zero: "125.35"
+            # for 125.350, "118.7" for 118.700.  Accept the value with trailing
+            # zeros of the decimal dropped, keeping at least the 3-digit MHz part.
+            # (candidate digits, must_end) — the trailing-zero-dropped form must
+            # not be followed by another digit, so a wrong final digit is caught.
+            digit_candidates = [(digits_only, False)]
+            if re.match(r'^\d{3}\.\d+$', expected_str) and digits_only.endswith('0'):
+                trimmed = digits_only.rstrip('0')
+                if len(trimmed) >= 3 and trimmed != digits_only:
+                    digit_candidates.append((trimmed, True))
+            for cand, must_end in digit_candidates:
+                if len(cand) >= 2:
+                    seq = _DIGIT_SEQ_SEP.join(_DIGIT_PHONETICS[d] for d in cand)
+                    if must_end:
+                        seq += rf'(?!{_DIGIT_SEQ_SEP}{_ANY_DIGIT_WORD})'
+                    if re.search(seq, utterance, re.IGNORECASE):
+                        matched = True
+                        matched_via = "digit_phonetic"
+                        break
 
         # 2. Check ICAO phonetic sequential pattern for identifiers
         if not matched and expected_str and _value_is_icao_ident(expected_str):
