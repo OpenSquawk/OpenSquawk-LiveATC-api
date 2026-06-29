@@ -15,15 +15,21 @@ entry_mode: main
 variables:
   callsign:
     type: string
-    initial: "G-ABCD"
+    initial: "D-EMIL"
+    mutable_by: action_only
+  # Abbreviated registration used by ATC (D-EMIL -> D-IL).
+  callsign_short:
+    type: string
+    initial: "D-IL"
     mutable_by: action_only
   runway:
     type: string
     initial: "25L"
     mutable_by: action_only
+  # Circuit direction word only: "left" or "right" (never "left hand").
   circuit_direction:
     type: string
-    initial: "left hand"
+    initial: "left"
     mutable_by: action_only
   qnh:
     type: string
@@ -74,8 +80,8 @@ states:
 
     ok_next:
       - to: ATC_CIRCUIT_INFO
-        trigger: "joining|circuit|inbound|landing|for landing"
-        label: "Pilot called Tower and stated intentions"
+        trigger: "joining|circuit|inbound|landing|for landing|downwind|base|final"
+        label: "Pilot called Tower and stated intentions (incl. continuing from the arrival join)"
 
     bad_next:
       - to: ATC_INITIAL_TOWER_CONTACT_INCORRECT
@@ -88,7 +94,7 @@ states:
     phase: circuit
     name: "ATC Prompts for Correct Tower Contact"
     description: "Controller asks the pilot to report callsign, joining circuit, and intention to land"
-    say_template: "{{callsign}}, say again, report joining circuit runway {{runway}} for landing"
+    say_template: "{{callsign_short}}, say again, report joining circuit runway {{runway}} for landing"
     frequency_name: "Tower"
 
     ok_next: []
@@ -105,7 +111,7 @@ states:
     phase: circuit
     name: "Tower Issues Circuit Information"
     description: "Tower confirms runway, circuit direction, QNH, and instructs pilot to report downwind"
-    say_template: "{{callsign}}, runway {{runway}}, {{circuit_direction}} circuit, QNH {{qnh}}, report downwind"
+    say_template: "{{callsign_short}}, runway {{runway}}, {{circuit_direction}} circuit, QNH {{qnh}}, report downwind"
     frequency_name: "Tower"
 
     ok_next: []
@@ -153,7 +159,7 @@ states:
     phase: circuit
     name: "ATC Corrects Circuit Readback"
     description: "Controller repeats runway and QNH for the pilot"
-    say_template: "Negative, {{callsign}}, say again: runway {{runway}}, QNH {{qnh}}"
+    say_template: "Negative, {{callsign_short}}, say again: runway {{runway}}, QNH {{qnh}}"
     frequency_name: "Tower"
 
     ok_next: []
@@ -189,7 +195,7 @@ states:
     phase: circuit
     name: "ATC Prompts for Downwind Report"
     description: "Controller asks the pilot to report downwind with callsign and runway"
-    say_template: "{{callsign}}, say again, report downwind runway {{runway}}"
+    say_template: "{{callsign_short}}, say again, report downwind runway {{runway}}"
     frequency_name: "Tower"
 
     ok_next: []
@@ -206,7 +212,7 @@ states:
     phase: circuit
     name: "Tower Issues Sequencing"
     description: "Tower gives the traffic sequence number, points out preceding traffic, and instructs pilot to report final"
-    say_template: "{{callsign}}, number {{sequence_number}}, follow {{preceding_traffic}}, report final"
+    say_template: "{{callsign_short}}, number {{sequence_number}}, follow {{preceding_traffic}}, report final"
     frequency_name: "Tower"
 
     ok_next: []
@@ -261,7 +267,7 @@ states:
     phase: circuit
     name: "ATC Prompts for Final Report"
     description: "Controller asks the pilot to report final with callsign and runway"
-    say_template: "{{callsign}}, say again, report final runway {{runway}}"
+    say_template: "{{callsign_short}}, say again, report final runway {{runway}}"
     frequency_name: "Tower"
 
     ok_next: []
@@ -278,7 +284,7 @@ states:
     phase: circuit
     name: "Tower Issues Landing Clearance"
     description: "Tower clears the aircraft to land, passing current surface wind"
-    say_template: "{{callsign}}, runway {{runway}}, cleared to land, wind {{surface_wind}}"
+    say_template: "{{callsign_short}}, runway {{runway}}, cleared to land, wind {{surface_wind}}"
     frequency_name: "Tower"
 
     ok_next: []
@@ -325,7 +331,7 @@ states:
     phase: circuit
     name: "ATC Corrects Landing Readback"
     description: "Controller repeats runway number for the landing clearance readback"
-    say_template: "Negative, {{callsign}}, say again: runway {{runway}}, cleared to land"
+    say_template: "Negative, {{callsign_short}}, say again: runway {{runway}}, cleared to land"
     frequency_name: "Tower"
 
     ok_next: []
@@ -361,7 +367,7 @@ states:
     phase: circuit
     name: "ATC Prompts for Runway Vacated Report"
     description: "Controller asks the pilot to report runway vacated"
-    say_template: "{{callsign}}, say again, report runway vacated"
+    say_template: "{{callsign_short}}, say again, report runway vacated"
     frequency_name: "Tower"
 
     ok_next: []
@@ -378,7 +384,7 @@ states:
     phase: circuit
     name: "Tower Acknowledges Vacated and Issues Taxi-In"
     description: "Tower confirms runway vacated, gives initial taxi-in destination, and hands off to Ground"
-    say_template: "{{callsign}}, taxi to {{parking_instruction}}, contact ground {{ground_freq}}"
+    say_template: "{{callsign_short}}, taxi to {{parking_instruction}}, contact ground {{ground_freq}}"
     frequency_name: "Tower"
 
     ok_next: []
@@ -425,7 +431,7 @@ states:
     phase: circuit
     name: "ATC Corrects Vacated Readback"
     description: "Controller repeats the ground frequency for the pilot"
-    say_template: "Negative, {{callsign}}, ground on {{ground_freq}}"
+    say_template: "Negative, {{callsign_short}}, ground on {{ground_freq}}"
     frequency_name: "Tower"
 
     ok_next: []
@@ -442,7 +448,7 @@ states:
     phase: circuit
     name: "Tower Confirms Readback"
     description: "Tower confirms readback correct and bids farewell"
-    say_template: "Readback correct, {{callsign}}, good day"
+    say_template: "Readback correct, {{callsign_short}}, good day"
     frequency_name: "Tower"
 
     ok_next: []
