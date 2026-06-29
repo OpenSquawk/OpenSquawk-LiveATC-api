@@ -72,9 +72,20 @@ MAX_AUTO_ADVANCE_HOPS=50
 READBACK_TIMEOUT_MS=30000
 READBACK_SILENCE_MS=40000
 LOG_LEVEL=info
+
+# LLM-Router: bei Regex-Miss fragt die Engine das LLM (über den Nuxt-Endpoint
+# /api/decision/route), welcher Kandidat zur — oft STT-verrauschten —
+# Transkription passt, bevor sie auf bad_next zurückfällt.
+LLM_ROUTER_ENABLED=true
+FRONTEND_BASE_URL=http://127.0.0.1:3000   # Nuxt-Server mit /api/decision/route
+SERVICE_SECRET=                            # muss SERVICE_SECRET im Nuxt-Env entsprechen
+LLM_ROUTER_TIMEOUT_MS=10000                # Zeitbudget pro LLM-Call (zum Tunen)
 ```
 
-Meist reicht lokal die Default-Konfiguration.
+Meist reicht lokal die Default-Konfiguration. Der LLM-Router bleibt inaktiv,
+solange `SERVICE_SECRET` leer ist — die Engine routet dann rein deterministisch
+(bad_next). Erst wenn auf beiden Seiten dasselbe `SERVICE_SECRET` gesetzt ist,
+wird das LLM befragt.
 
 ## Deployment
 

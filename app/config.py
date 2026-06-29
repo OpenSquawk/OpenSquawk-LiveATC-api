@@ -18,6 +18,20 @@ READBACK_TIMEOUT_MS = int(os.getenv("READBACK_TIMEOUT_MS", "30000"))
 READBACK_SILENCE_MS = int(os.getenv("READBACK_SILENCE_MS", "40000"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "info").upper()
 
+# --- LLM semantic router ----------------------------------------------------
+# When deterministic regex routing fails to match a pilot transmission, the
+# engine asks the LLM (via the Nuxt /api/decision/route endpoint) to pick the
+# best candidate transition before conceding to bad_next. The call is routed
+# through Nuxt so it lands in the central usage ledger and routing-review log.
+LLM_ROUTER_ENABLED = os.getenv("LLM_ROUTER_ENABLED", "true").lower() in ("1", "true", "yes")
+# Base URL of the Nuxt server that hosts /api/decision/route.
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://127.0.0.1:3000").rstrip("/")
+# Shared secret sent as the x-service-secret header (must match Nuxt SERVICE_SECRET).
+SERVICE_SECRET = os.getenv("SERVICE_SECRET", "")
+# Time budget handed to the LLM call, in ms. Currently generous (10s) so real
+# latency can be measured before tightening it.
+LLM_ROUTER_TIMEOUT_MS = int(os.getenv("LLM_ROUTER_TIMEOUT_MS", "10000"))
+
 _DEFAULT_ORIGINS = ",".join([
     "https://opensquawk.de",
     "https://www.opensquawk.de",

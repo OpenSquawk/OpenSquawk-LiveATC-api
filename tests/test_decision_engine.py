@@ -580,3 +580,62 @@ class TestFlowInterrupt:
         assert session.active_flow == "clearance-v1"
         # Resumed at INITIAL_CALL (where the interrupt happened)
         assert resp.next_state_id == "INITIAL_CALL"
+
+
+class TestLlmRescue:
+    """The semantic router rescues regex misses (usually STT-garbled transcripts).
+
+    The HTTP call is mocked: ``app.decision_engine.llm_route`` is patched so no
+    network is touched. These verify the engine wiring around the router —
+    routing a rescued candidate, and falling back to bad_next on abstain/timeout.
+    """
+
+    def _patch(self, monkeypatch, result):
+        from app import decision_engine
+
+        def fake_route(**kwargs):
+            return result
+
+        monkeypatch.setattr(decision_engine, "llm_route", fake_route)
+
+    def test_rescues_garbled_transcript_to_ok_next(self, clearance_session, monkeypatch):
+        from app.flow_loader import get_flow
+        from app.llm_router import RouterResult
+
+        ok_target = get_flow("clearance").states["INITIAL_CALL"].ok_next[0].to
+        self._patch(monkeypatch, RouterResult(
+            chosen=ok_target, reason="intent matches expected request", status="decided", latency_ms=140,
+        ))
+        # Transcript that does NOT match the regex trigger, simulating bad STT.
+        resp = process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance="rikwest klarinette pliis"),
+        )
+        assert resp.next_state_id == "PILOT_READBACK"
+        assert resp.fallback_used is True
+        assert "llm_call" in [t.type for t in resp.trace]
+
+    def test_abstain_falls_back_to_bad_next(self, clearance_session, monkeypatch):
+        from app.llm_router import RouterResult
+
+        self._patch(monkeypatch, RouterResult(
+            chosen=None, reason="no candidate plausible", status="abstain", latency_ms=95,
+        ))
+        resp = process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance="totally unrelated chatter"),
+        )
+        assert resp.next_state_id == "INITIAL_CALL"  # bad_next target
+
+    def test_timeout_falls_back_to_bad_next(self, clearance_session, monkeypatch):
+        from app.llm_router import RouterResult
+
+        self._patch(monkeypatch, RouterResult(
+            chosen=None, reason="router_http_timeout", status="transport_error", latency_ms=None,
+        ))
+        resp = process_transmission(
+            clearance_session.session_id,
+            DecisionRequest(pilot_utterance="garbled nonsense"),
+        )
+        assert resp.next_state_id == "INITIAL_CALL"
+        assert "llm_call" in [t.type for t in resp.trace]

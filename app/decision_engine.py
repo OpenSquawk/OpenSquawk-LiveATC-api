@@ -16,6 +16,8 @@ from app.auto_advance import advance_through_non_pilot
 from app.flow_loader import get_flow
 from app.flow_orchestrator import handle_flow_completion, push_flow
 from app.guard_evaluator import evaluate_guard
+from app.llm_router import RouterResult
+from app.llm_router import route as llm_route
 from app.models import (
     DecisionFlow,
     DecisionRequest,
@@ -214,22 +216,48 @@ def _apply_transition_actions(
 
 
 # ---------------------------------------------------------------------------
-# LLM fallback stub (Phase 5)
+# LLM semantic rescue (Phase 5)
 # ---------------------------------------------------------------------------
 
-def _llm_fallback(
+def _llm_rescue(
     pilot_utterance: str,
     state: DecisionState,
-    candidates: List[Transition],
     session: RuntimeSession,
-) -> Tuple[Optional[Transition], str]:
-    """Stub — returns (None, reason) so caller falls back to bad_next."""
-    logger.warning(
-        "LLM fallback not yet implemented. Utterance: '%s', state: '%s'",
-        pilot_utterance,
-        state.id,
+    flow: DecisionFlow,
+) -> Tuple[Optional[Transition], RouterResult]:
+    """Ask the LLM to pick an ok_next/bad_next transition when regex missed.
+
+    Returns (selected_transition, router_result). ``selected_transition`` is
+    None when the model abstains, times out, errors, or names a candidate that
+    is somehow not on the state (the caller then keeps its deterministic
+    bad_next fallback).
+    """
+    expected = render_template(state.expected_pilot_template, session.variables) \
+        if state.expected_pilot_template else None
+
+    result = llm_route(
+        session_id=session.session_id,
+        flow_slug=flow.slug,
+        state_id=state.id,
+        transcript=pilot_utterance,
+        expected_phrase=expected,
+        ok_next=state.ok_next,
+        bad_next=state.bad_next,
     )
-    return None, "llm_not_implemented"
+
+    if result.chosen is None:
+        return None, result
+
+    # Map the chosen id back to the actual Transition on this state.
+    for t in state.ok_next + state.bad_next:
+        if t.to == result.chosen:
+            return t, result
+
+    logger.warning(
+        "LLM returned candidate '%s' not found on state '%s' — ignoring",
+        result.chosen, state.id,
+    )
+    return None, result
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +484,29 @@ def process_transmission(
     elif match_reason == "no_match":
         trace.append(_trace("no_regex_match", f"No trigger matched utterance '{request.pilot_utterance}'"))
 
+    # --- Step 6b: LLM semantic rescue when regex found no ok_next match ---
+    # The deterministic layer only managed bad_next (or nothing). Before
+    # conceding the transmission was wrong, ask the LLM whether the (often
+    # STT-garbled) transcript actually matches one of the candidates. Every
+    # call — including timeouts — is persisted to the routing-review log on the
+    # Nuxt side so the time budget can be tuned later.
+    if match_reason in ("bad_next_fallback", "no_match"):
+        llm_trans, llm_result = _llm_rescue(
+            request.pilot_utterance, current_state, session, flow,
+        )
+        trace.append(_trace(
+            "llm_call",
+            f"LLM router status={llm_result.status} "
+            f"chosen={llm_result.chosen or '—'} "
+            f"({llm_result.latency_ms if llm_result.latency_ms is not None else '?'}ms): "
+            f"{llm_result.reason}",
+        ))
+        if llm_trans is not None:
+            selected_transition = llm_trans
+            match_reason = "llm_routed"
+            fallback_used = True
+            fallback_reason = f"llm_routed → {llm_trans.to} ({llm_result.reason})"
+
     # --- Step 7: Readback evaluation (if required) ---
     # Emergency overrides skip readback entirely — MAYDAY / PAN-PAN always takes
     # priority regardless of whether the required fields are present.
@@ -503,27 +554,20 @@ def process_transmission(
             else:
                 trace.append(_trace("readback_fail", "No bad_next available; proceeding anyway"))
 
-    # --- Step 8: LLM fallback if still no candidate ---
+    # --- Step 8: Hard fallback if still no candidate ---
+    # The LLM rescue (step 6b) already ran; reaching here means regex missed,
+    # the LLM abstained/failed, and the state has no bad_next to fall back to.
     if selected_transition is None:
-        llm_trans, llm_reason = _llm_fallback(
-            request.pilot_utterance, current_state, all_candidates, session
-        )
         fallback_used = True
-        if llm_trans is not None:
-            selected_transition = llm_trans
-            fallback_reason = f"llm_routed: {llm_reason}"
-            trace.append(_trace("llm_call", f"LLM selected → '{selected_transition.to}'"))
+        if current_state.bad_next:
+            selected_transition = current_state.bad_next[0]
+            fallback_reason = fallback_reason or "no_match — using first bad_next"
+            trace.append(_trace("fallback", f"No candidate matched — using first bad_next → '{selected_transition.to}'"))
         else:
-            # Hard fallback: first bad_next
-            fallback_reason = f"llm_failed ({llm_reason}) — using first bad_next"
-            trace.append(_trace("fallback", fallback_reason))
-            if current_state.bad_next:
-                selected_transition = current_state.bad_next[0]
-            else:
-                raise ValueError(
-                    f"No valid transition from state '{current_state.id}' "
-                    f"for utterance '{request.pilot_utterance}' and no bad_next defined"
-                )
+            raise ValueError(
+                f"No valid transition from state '{current_state.id}' "
+                f"for utterance '{request.pilot_utterance}' and no bad_next defined"
+            )
 
     # --- Step 9: Validate selected state + handle flow interrupt ---
     if selected_transition.interrupt_flow:
