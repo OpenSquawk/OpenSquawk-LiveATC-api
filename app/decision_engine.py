@@ -680,10 +680,17 @@ def process_transmission(
     # When a readback was given up on, prefix the next instruction with a notice
     # so the pilot knows ATC moved on without a correct readback.
     if skip_readback_notice:
+        # The skip can land directly on a pilot state (e.g. REQUEST_TAXI) that has
+        # no say_template, so render_template() returned None for both `rendered`
+        # and `say_template` above. Coerce to "" so the skip notice still becomes
+        # the spoken ATC line. WITHOUT this coercion, re.sub() below raises
+        # TypeError and the whole transmission 500s — which is the "3x skip
+        # advanced the state but ATC announced nothing" bug.
         # Drop a leading "Readback correct" confirmation from the next instruction
         # so it doesn't contradict the skip notice we're prepending.
-        rendered = re.sub(r"^\s*readback correct[\s,.:!-]*", "", rendered, flags=re.IGNORECASE)
+        rendered = re.sub(r"^\s*readback correct[\s,.:!-]*", "", rendered or "", flags=re.IGNORECASE)
         rendered = render_template(_READBACK_SKIP_NOTICE, session.variables) + rendered
+        say_template = _READBACK_SKIP_NOTICE + (say_template or "")
     expected = render_template(next_state.expected_pilot_template, session.variables)
 
     # Session is complete when it rests at a terminal end state (no further

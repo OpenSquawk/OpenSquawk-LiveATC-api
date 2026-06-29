@@ -639,3 +639,33 @@ class TestLlmRescue:
         )
         assert resp.next_state_id == "INITIAL_CALL"
         assert "llm_call" in [t.type for t in resp.trace]
+
+
+class TestReadbackSkipLandsOnPilotState:
+    """Regression: the 3x readback skip can land on a pilot state that has no
+    say_template (taxi-v1: PILOT_PUSHBACK_READBACK → REQUEST_TAXI). Previously
+    render_template(None) made re.sub() raise TypeError, so the request 500'd —
+    the state advanced but ATC announced nothing. The skip notice must now be
+    spoken and the call must not raise.
+    """
+
+    def test_skip_to_pilot_state_announces_and_does_not_crash(self):
+        from app.flow_loader import get_flow
+        from app.session_store import save_session
+
+        session = create_session(get_flow("taxi"))
+        session.current_state = "PILOT_PUSHBACK_READBACK"
+        session.variables["pushback_direction"] = "west"
+        save_session(session)
+
+        wrong = DecisionRequest(pilot_utterance="pushback approved, face south")
+        # First two wrong readbacks → correction, back to the readback state.
+        for _ in range(2):
+            r = process_transmission(session.session_id, wrong)
+            assert r.next_state_id == "PILOT_PUSHBACK_READBACK"
+
+        # Third wrong readback → 3x skip → advances to REQUEST_TAXI WITH a notice.
+        resp = process_transmission(session.session_id, wrong)
+        assert resp.next_state_id == "REQUEST_TAXI"
+        assert resp.controller_say_rendered, "skip notice must not be empty/None"
+        assert "continuing for now" in resp.controller_say_rendered.lower()
