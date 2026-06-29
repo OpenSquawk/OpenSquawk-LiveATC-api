@@ -52,7 +52,7 @@ states:
     phase: tower
     name: "Initial Contact — Holding Short"
     description: "Pilot calls tower with callsign, holding-short runway, ATIS information code, and readiness for departure"
-    expected_pilot_template: "{{callsign}}, holding short runway {{runway}}, information {{information}}, ready for departure"
+    expected_pilot_template: "{{callsign}}, holding short runway {{runway}}, ready for departure"
     frequency_name: "Tower"
     allow_greeting: true
 
@@ -72,7 +72,7 @@ states:
     phase: tower
     name: "ATC Prompts for Correct Initial Call"
     description: "Controller asks the pilot to report holding short of the runway with information code and readiness for departure"
-    say_template: "{{callsign}}, say again, report holding short runway {{runway}}, with information and ready for departure"
+    say_template: "{{callsign}}, say again, report holding short runway {{runway}} and ready for departure"
     frequency_name: "Tower"
 
     ok_next: []
