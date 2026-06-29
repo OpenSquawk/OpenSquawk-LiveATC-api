@@ -1,0 +1,285 @@
+slug: rto-v1
+schema_version: "2.0"
+name: "Rejected Take-Off Drill"
+description: "Pilot lines up and is cleared for takeoff, then Tower cancels the takeoff clearance and orders an immediate stop. Pilot must reject the takeoff and acknowledge."
+
+start_state: INITIAL_CONTACT
+end_states:
+  - RTO_COMPLETE
+
+# Standalone drill — does not chain onward.
+entry_mode: main
+
+variables:
+  callsign:
+    type: string
+    initial: "DLH39A"
+    mutable_by: action_only
+  runway:
+    type: string
+    initial: "25L"
+    mutable_by: action_only
+  surface_wind:
+    type: string
+    initial: "250/07"
+    mutable_by: action_only
+  information:
+    type: string
+    initial: "K"
+    mutable_by: action_only
+
+flags:
+  lineup_clearance_issued:
+    initial: false
+  takeoff_clearance_issued:
+    initial: false
+  takeoff_cancelled:
+    initial: false
+
+states:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 1. Pilot calls tower holding short of active runway
+  # ─────────────────────────────────────────────────────────────────────────────
+  INITIAL_CONTACT:
+    role: pilot
+    phase: tower
+    name: "Initial Contact — Holding Short"
+    description: "Pilot calls tower with callsign, holding-short runway, ATIS information code, and readiness for departure"
+    expected_pilot_template: "{{callsign}}, holding short runway {{runway}}, information {{information}}, ready for departure"
+    frequency_name: "Tower"
+    allow_greeting: true
+
+    ok_next:
+      - to: ATC_LINEUP_CLEARANCE
+        trigger: "holding.*short|holding short|ready.*departure|ready.*take.*off|information"
+        label: "Pilot reported holding short and ready"
+
+    bad_next:
+      - to: ATC_INITIAL_CONTACT_INCORRECT
+        label: "Incomplete call — controller prompts for holding-short report and readiness"
+
+    auto_transitions: []
+
+  ATC_INITIAL_CONTACT_INCORRECT:
+    role: atc
+    phase: tower
+    name: "ATC Prompts for Correct Initial Call"
+    description: "Controller asks the pilot to report holding short of the runway with information code and readiness for departure"
+    say_template: "{{callsign}}, say again, report holding short runway {{runway}}, with information and ready for departure"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: INITIAL_CONTACT
+        label: "Prompt given — pilot to retry"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 2. Tower issues line-up-and-wait
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_LINEUP_CLEARANCE:
+    role: atc
+    phase: tower
+    name: "Tower Issues Line-Up-and-Wait"
+    description: "Tower instructs the pilot to enter and line up on the runway and wait"
+    say_template: "{{callsign}}, runway {{runway}}, line up and wait"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_LINEUP_READBACK
+        label: "Line-up-and-wait issued — awaiting pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: lineup_clearance_issued
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 3. Pilot reads back lineup clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_LINEUP_READBACK:
+    role: pilot
+    phase: tower
+    name: "Pilot Reads Back Line-Up-and-Wait"
+    description: "Pilot reads back the runway number to confirm line-up-and-wait instruction"
+    expected_pilot_template: "Line up and wait, runway {{runway}}, {{callsign}}"
+    frequency_name: "Tower"
+
+    readback_required:
+      - runway
+    readback_mode: simple
+
+    ok_next:
+      - to: ATC_TAKEOFF_CLEARANCE
+        trigger: ".*"
+        label: "Lineup readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_LINEUP_READBACK_INCORRECT
+        label: "Readback missing runway designation — controller corrects"
+
+    auto_transitions: []
+
+  ATC_LINEUP_READBACK_INCORRECT:
+    role: atc
+    phase: tower
+    name: "ATC Corrects Lineup Readback"
+    description: "Controller repeats the runway number for the pilot to include in the readback"
+    say_template: "Negative, {{callsign}}, say again: runway {{runway}}, line up and wait"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_LINEUP_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 4. Tower issues takeoff clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_TAKEOFF_CLEARANCE:
+    role: atc
+    phase: tower
+    name: "Tower Issues Takeoff Clearance"
+    description: "Tower clears the aircraft for takeoff with current surface wind and active runway"
+    say_template: "{{callsign}}, wind {{surface_wind}}, runway {{runway}}, cleared for takeoff"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_TAKEOFF_READBACK
+        label: "Takeoff clearance given — awaiting pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: takeoff_clearance_issued
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 5. Pilot reads back takeoff clearance
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_TAKEOFF_READBACK:
+    role: pilot
+    phase: tower
+    name: "Pilot Reads Back Takeoff Clearance"
+    description: "Pilot must read back the runway and cleared-for-takeoff — callsign required"
+    expected_pilot_template: "Cleared for takeoff, runway {{runway}}, {{callsign}}"
+    frequency_name: "Tower"
+
+    readback_required:
+      - runway
+    readback_mode: simple
+
+    ok_next:
+      - to: ATC_CANCEL_TAKEOFF
+        trigger: ".*"
+        label: "Takeoff readback evaluated — correct; Tower then cancels"
+
+    bad_next:
+      - to: ATC_TAKEOFF_READBACK_INCORRECT
+        label: "Readback missing runway — controller corrects"
+
+    auto_transitions: []
+
+  ATC_TAKEOFF_READBACK_INCORRECT:
+    role: atc
+    phase: tower
+    name: "ATC Corrects Takeoff Readback"
+    description: "Controller repeats the runway number for the takeoff clearance readback"
+    say_template: "Negative, {{callsign}}, say again: runway {{runway}}, cleared for takeoff"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_TAKEOFF_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 6. Tower cancels the takeoff clearance — pilot must reject the takeoff
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_CANCEL_TAKEOFF:
+    role: atc
+    phase: tower
+    name: "Tower Cancels Takeoff Clearance"
+    description: "Tower cancels the takeoff clearance and orders an immediate stop (ICAO: 'stop immediately' with callsign repeated)"
+    say_template: "{{callsign}}, cancel take-off, I say again, cancel take-off, stop immediately, {{callsign}}, stop immediately"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_RTO_ACK
+        label: "Takeoff cancelled — awaiting pilot's stopping call"
+        on_enter_actions:
+          - type: set_flag
+            target: takeoff_cancelled
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 7. Pilot acknowledges the rejected takeoff
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_RTO_ACK:
+    role: pilot
+    phase: tower
+    name: "Pilot Acknowledges Rejected Takeoff"
+    description: "Pilot rejects the takeoff and reports stopping / holding position"
+    expected_pilot_template: "Stopping, {{callsign}}"
+    frequency_name: "Tower"
+
+    ok_next:
+      - to: ATC_RTO_CONFIRM
+        trigger: "stop|stopping|abort|aborting|reject|rejecting|hold|holding|braking|rto"
+        label: "Pilot acknowledged the stop / rejected takeoff"
+
+    bad_next:
+      - to: ATC_RTO_REPROMPT
+        label: "No clear stopping call — controller repeats the stop instruction"
+
+    auto_transitions: []
+
+  ATC_RTO_REPROMPT:
+    role: atc
+    phase: tower
+    name: "ATC Repeats Stop Instruction"
+    description: "Controller repeats the immediate-stop instruction"
+    say_template: "{{callsign}}, stop immediately, acknowledge"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_RTO_ACK
+        label: "Stop repeated — pilot to acknowledge"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 8. Tower confirms and holds the aircraft
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_RTO_CONFIRM:
+    role: atc
+    phase: tower
+    name: "Tower Confirms Stop"
+    description: "Tower acknowledges the rejected takeoff and holds the aircraft on the runway"
+    say_template: "{{callsign}}, roger, hold position, advise when ready to vacate"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: RTO_COMPLETE
+        label: "Rejected takeoff handled"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 9. End state
+  # ─────────────────────────────────────────────────────────────────────────────
+  RTO_COMPLETE:
+    role: system
+    phase: tower
+    name: "Rejected Take-Off Complete"
+    description: "Takeoff was rejected and the aircraft is holding on the runway."
+
+    ok_next: []
+    bad_next: []
+    auto_transitions: []
