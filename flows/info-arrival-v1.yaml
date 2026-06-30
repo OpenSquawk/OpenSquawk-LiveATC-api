@@ -1,0 +1,344 @@
+slug: info-arrival-v1
+schema_version: "2.0"
+name: "Uncontrolled Field Arrival (Info / UNICOM)"
+description: "Arrival at an airfield with only a Flight Information Service (Info / UNICOM), no control tower. Info passes the runway in use, QNH and known traffic but issues NO clearances; the pilot self-announces circuit positions and lands at their own discretion. Terminal flow — no onward handoff."
+
+start_state: INITIAL_CONTACT
+end_states:
+  - INFO_COMPLETE
+
+# Terminal: at an uncontrolled field there is no Ground unit to hand off to.
+entry_mode: main
+
+variables:
+  callsign:
+    type: string
+    initial: "D-EMIL"
+    mutable_by: action_only
+  callsign_short:
+    type: string
+    initial: "D-IL"
+    mutable_by: action_only
+  station:
+    type: string
+    initial: "Eggenfelden"
+    mutable_by: action_only
+  aircraft_type:
+    type: string
+    initial: "C172"
+    mutable_by: action_only
+  origin:
+    type: string
+    initial: "Munich"
+    mutable_by: action_only
+  position:
+    type: string
+    initial: "5 miles south"
+    mutable_by: action_only
+  altitude:
+    type: string
+    initial: "2500"
+    mutable_by: action_only
+  runway:
+    type: string
+    initial: "25"
+    mutable_by: action_only
+  qnh:
+    type: string
+    initial: "1013"
+    mutable_by: action_only
+  circuit_direction:
+    type: string
+    initial: "left"
+    mutable_by: action_only
+  surface_wind:
+    type: string
+    initial: "250/08"
+    mutable_by: action_only
+  traffic_info:
+    type: string
+    initial: "one glider in the circuit"
+    mutable_by: action_only
+
+flags:
+  info_passed:
+    initial: false
+  runway_vacated:
+    initial: false
+
+states:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 1. Pilot calls Info with position, intentions, and requests airfield info
+  # ─────────────────────────────────────────────────────────────────────────────
+  INITIAL_CONTACT:
+    role: pilot
+    phase: arrival
+    name: "Initial Contact with Info"
+    description: "Pilot calls the Info / UNICOM station with registration, type, VFR origin, position, altitude, intention to land, and requests the airfield information"
+    expected_pilot_template: "{{station}} Info, {{callsign}}, {{aircraft_type}}, VFR from {{origin}}, {{position}}, {{altitude}} feet, for landing, request airfield information"
+    frequency_name: "Info"
+    allow_greeting: true
+
+    ok_next:
+      - to: INFO_RESPONSE
+        trigger: "VFR|for landing|landing|information|inbound|request|joining"
+        label: "Pilot called Info with intentions"
+
+    bad_next:
+      - to: ATC_INITIAL_CONTACT_INCORRECT
+        label: "Incomplete call — Info prompts for type, position, altitude and intentions"
+
+    auto_transitions: []
+
+  ATC_INITIAL_CONTACT_INCORRECT:
+    role: atc
+    phase: arrival
+    name: "Info Prompts for Full Call"
+    description: "Info asks the pilot to pass type, position, altitude and intentions"
+    say_template: "{{callsign}}, say again, pass your type, position, altitude and intentions"
+    frequency_name: "Info"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: INITIAL_CONTACT
+        label: "Prompt given — pilot to retry"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 2. Info passes the airfield information (NOT a clearance)
+  # ─────────────────────────────────────────────────────────────────────────────
+  INFO_RESPONSE:
+    role: atc
+    phase: arrival
+    name: "Info Passes Airfield Information"
+    description: "Info passes the runway in use, QNH and known traffic, and reminds the pilot there is no control service — landing is at the pilot's discretion"
+    say_template: "{{callsign_short}}, {{station}} Info, runway {{runway}}, QNH {{qnh}}, {{traffic_info}}, report {{circuit_direction}} downwind. No control service, land at your discretion."
+    frequency_name: "Info"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_INFO_READBACK
+        label: "Information passed — await pilot readback"
+        on_enter_actions:
+          - type: set_flag
+            target: info_passed
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 3. Pilot reads back the runway and QNH
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_INFO_READBACK:
+    role: pilot
+    phase: arrival
+    name: "Pilot Reads Back Runway and QNH"
+    description: "Pilot reads back the runway in use and QNH"
+    expected_pilot_template: "Runway {{runway}}, QNH {{qnh}}, {{callsign}}"
+    frequency_name: "Info"
+
+    readback_required:
+      - runway
+      - qnh
+    readback_mode: simple
+
+    ok_next:
+      - to: REPORT_DOWNWIND
+        trigger: ".*"
+        label: "Information readback evaluated — correct"
+
+    bad_next:
+      - to: INFO_READBACK_INCORRECT
+        label: "Readback missing runway or QNH — Info corrects"
+
+    auto_transitions: []
+
+  INFO_READBACK_INCORRECT:
+    role: atc
+    phase: arrival
+    name: "Info Corrects Readback"
+    description: "Info repeats the runway and QNH"
+    say_template: "Negative, {{callsign_short}}, say again: runway {{runway}}, QNH {{qnh}}"
+    frequency_name: "Info"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_INFO_READBACK
+        label: "Correction given — pilot to try again"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 4. Pilot self-announces downwind
+  # ─────────────────────────────────────────────────────────────────────────────
+  REPORT_DOWNWIND:
+    role: pilot
+    phase: arrival
+    name: "Downwind Self-Announce"
+    description: "Pilot self-announces the downwind leg of the circuit"
+    expected_pilot_template: "{{callsign}}, {{circuit_direction}} downwind runway {{runway}}"
+    frequency_name: "Info"
+
+    ok_next:
+      - to: INFO_DOWNWIND_ACK
+        trigger: "downwind|down.*wind"
+        label: "Pilot reported downwind"
+
+    bad_next:
+      - to: INFO_DOWNWIND_INCORRECT
+        label: "No clear downwind call — Info prompts"
+
+    auto_transitions: []
+
+  INFO_DOWNWIND_INCORRECT:
+    role: atc
+    phase: arrival
+    name: "Info Prompts for Downwind"
+    description: "Info asks the pilot to report downwind"
+    say_template: "{{callsign_short}}, say again, report {{circuit_direction}} downwind runway {{runway}}"
+    frequency_name: "Info"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: REPORT_DOWNWIND
+        label: "Prompt given — pilot to retry"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 5. Info acknowledges downwind, passes traffic, asks for a final call
+  # ─────────────────────────────────────────────────────────────────────────────
+  INFO_DOWNWIND_ACK:
+    role: atc
+    phase: arrival
+    name: "Info Acknowledges Downwind"
+    description: "Info acknowledges the downwind call, passes any traffic, and asks the pilot to report final"
+    say_template: "{{callsign_short}}, roger, {{traffic_info}}, report final"
+    frequency_name: "Info"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: REPORT_FINAL
+        label: "Downwind acknowledged — await final call"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 6. Pilot self-announces final
+  # ─────────────────────────────────────────────────────────────────────────────
+  REPORT_FINAL:
+    role: pilot
+    phase: arrival
+    name: "Final Self-Announce"
+    description: "Pilot self-announces turning final for the runway in use"
+    expected_pilot_template: "{{callsign}}, final runway {{runway}}"
+    frequency_name: "Info"
+
+    ok_next:
+      - to: INFO_FINAL_ACK
+        trigger: "final|finals"
+        label: "Pilot reported final"
+
+    bad_next:
+      - to: INFO_FINAL_INCORRECT
+        label: "No clear final call — Info prompts"
+
+    auto_transitions: []
+
+  INFO_FINAL_INCORRECT:
+    role: atc
+    phase: arrival
+    name: "Info Prompts for Final"
+    description: "Info asks the pilot to report final"
+    say_template: "{{callsign_short}}, say again, report final runway {{runway}}"
+    frequency_name: "Info"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: REPORT_FINAL
+        label: "Prompt given — pilot to retry"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 7. Info passes the wind — NO landing clearance (uncontrolled field)
+  # ─────────────────────────────────────────────────────────────────────────────
+  INFO_FINAL_ACK:
+    role: atc
+    phase: arrival
+    name: "Info Passes Wind (No Clearance)"
+    description: "Info passes the surface wind and reminds the pilot that landing is at their own discretion — there is no landing clearance at an uncontrolled field"
+    say_template: "{{callsign_short}}, roger, wind {{surface_wind}}, runway {{runway}}, land at your discretion"
+    frequency_name: "Info"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_RUNWAY_VACATED
+        label: "Wind passed — pilot lands and reports vacated"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 8. Pilot reports the runway vacated
+  # ─────────────────────────────────────────────────────────────────────────────
+  PILOT_RUNWAY_VACATED:
+    role: pilot
+    phase: arrival
+    name: "Pilot Reports Runway Vacated"
+    description: "After landing, the pilot reports the runway vacated"
+    expected_pilot_template: "{{callsign}}, runway vacated"
+    frequency_name: "Info"
+
+    ok_next:
+      - to: INFO_VACATED_ACK
+        trigger: "vacat|clear.*runway|runway.*clear|off.*runway"
+        label: "Pilot reported runway vacated"
+
+    bad_next:
+      - to: INFO_RUNWAY_VACATED_INCORRECT
+        label: "No clear vacated call — Info prompts"
+
+    auto_transitions: []
+
+  INFO_RUNWAY_VACATED_INCORRECT:
+    role: atc
+    phase: arrival
+    name: "Info Prompts for Vacated Report"
+    description: "Info asks the pilot to report runway vacated"
+    say_template: "{{callsign_short}}, say again, report runway vacated"
+    frequency_name: "Info"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_RUNWAY_VACATED
+        label: "Prompt given — pilot to retry"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 9. Info acknowledges — taxi to parking at the pilot's discretion
+  # ─────────────────────────────────────────────────────────────────────────────
+  INFO_VACATED_ACK:
+    role: atc
+    phase: arrival
+    name: "Info Acknowledges Vacated"
+    description: "Info acknowledges the runway is clear and releases the pilot to taxi to parking at their own discretion"
+    say_template: "{{callsign_short}}, roger, taxi to parking at your discretion, good day"
+    frequency_name: "Info"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: INFO_COMPLETE
+        label: "Arrival complete"
+        on_enter_actions:
+          - type: set_flag
+            target: runway_vacated
+            value: true
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 10. End state
+  # ─────────────────────────────────────────────────────────────────────────────
+  INFO_COMPLETE:
+    role: system
+    phase: arrival
+    name: "Uncontrolled Arrival Complete"
+    description: "Arrival at the uncontrolled field complete. Taxi to parking at your discretion."
+
+    ok_next: []
+    bad_next: []
+    auto_transitions: []
