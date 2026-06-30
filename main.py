@@ -13,6 +13,7 @@ from app.flow_validator import validate_flow
 from app.routes.decision_routes import router as decision_router
 from app.routes.flow_routes import router as flow_router
 from app.routes.session_routes import router as session_router
+from app.routes.tool_routes import router as tool_router
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -66,6 +67,7 @@ app.add_middleware(
 app.include_router(flow_router)
 app.include_router(session_router)
 app.include_router(decision_router)
+app.include_router(tool_router)
 
 
 @app.on_event("startup")

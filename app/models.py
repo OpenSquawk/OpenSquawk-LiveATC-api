@@ -95,7 +95,7 @@ class DecisionState(BaseModel):
 class VariableDefinition(BaseModel):
     """Definition of a runtime variable."""
     name: str = ""                         # Populated by loader from dict key
-    type: Literal["string", "number", "boolean", "enum"]
+    type: Literal["string", "number", "boolean", "enum", "list"]
     enum_values: Optional[List[str]] = None
     initial: Any
     mutable_by: Literal["action_only", "none"] = "action_only"
@@ -154,6 +154,12 @@ class RuntimeSession(BaseModel):
     main_flow: str
     active_flow: str
     current_state: str
+
+    # ICAO codes the session was created for. A city can host several airports,
+    # so the human ``airport`` variable (a city name) is not enough to recompute
+    # OSM routes later — these keep the exact aerodrome.
+    airport_icao: Optional[str] = None
+    destination_icao: Optional[str] = None
 
     flow_stack: List[str] = Field(default_factory=list)
     state_stack: List[str] = Field(default_factory=list)

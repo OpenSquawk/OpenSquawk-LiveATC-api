@@ -32,6 +32,14 @@ SERVICE_SECRET = os.getenv("SERVICE_SECRET", "")
 # latency can be measured before tightening it.
 LLM_ROUTER_TIMEOUT_MS = int(os.getenv("LLM_ROUTER_TIMEOUT_MS", "10000"))
 
+# Compute a real OSM taxiway route at session creation for taxi flows and use it
+# in place of the YAML-default taxi_route. Best-effort: any failure (no ICAO,
+# Overpass down, feature not found, no path) silently keeps the flow default.
+TAXI_ROUTE_AUTOCOMPUTE = os.getenv("TAXI_ROUTE_AUTOCOMPUTE", "true").lower() in ("1", "true", "yes")
+# Per-Overpass-call time budget for taxi route computation, in ms. Two calls run
+# (airport features + taxiway graph), so worst case is ~2x this before fallback.
+TAXI_ROUTE_TIMEOUT_MS = int(os.getenv("TAXI_ROUTE_TIMEOUT_MS", "8000"))
+
 _DEFAULT_ORIGINS = ",".join([
     "https://opensquawk.de",
     "https://www.opensquawk.de",

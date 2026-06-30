@@ -3,7 +3,7 @@
 from app.taxi_route_service import (
     maybe_compute_taxi_route,
     phoneticize_route,
-    resolve_taxi_route_names,
+    resolve_taxi_clearance,
 )
 
 
@@ -60,35 +60,72 @@ class EmptyClient:
         return {"elements": []}
 
 
-def test_resolve_returns_collapsed_route_string():
-    route = resolve_taxi_route_names(
+# Same taxiway path as GRAPH_OSM, plus a north-south runway "18/36" across
+# lon 8.0015 that crosses the 2->3 taxiway segment. The crossing (lat 50.0) is
+# nearer the south (36) threshold at 49.9995 than the north (18) at 50.003.
+GRAPH_OSM_WITH_CROSSING = {
+    "elements": GRAPH_OSM["elements"]
+    + [
+        {"type": "node", "id": 701, "lat": 49.9995, "lon": 8.0015},
+        {"type": "node", "id": 702, "lat": 50.003, "lon": 8.0015},
+        {"type": "way", "id": 700, "nodes": [701, 702], "tags": {"aeroway": "runway", "ref": "18/36"}},
+    ]
+}
+
+
+class CrossingRouteClient(FakeRouteClient):
+    def fetch_json(self, query: str):
+        if 'way["aeroway"="taxiway"]' in query:
+            return GRAPH_OSM_WITH_CROSSING
+        return super().fetch_json(query)
+
+
+def test_resolve_detects_runway_crossing_and_builds_hold_clause():
+    clearance = resolve_taxi_clearance(
+        icao="EDDF",
+        origin_name="A12",
+        dest_name="25L",
+        client=CrossingRouteClient(),
+    )
+    assert clearance["taxi_route"] == "Lima 7, November"
+    assert clearance["crossing_runways"] == ["36"]
+    assert clearance["taxi_hold_clause"] == ", hold short runway 36"
+
+
+def test_resolve_returns_clearance_variables():
+    clearance = resolve_taxi_clearance(
         icao="EDDF",
         origin_name="A12",
         dest_name="25L",
         client=FakeRouteClient(),
     )
-    assert route == "Lima 7, November"
+    assert clearance == {
+        "taxi_route": "Lima 7, November",
+        "crossing_runways": [],
+        "taxi_hold_clause": "",
+    }
 
 
 def test_resolve_returns_none_when_feature_not_found():
     # Empty airport features -> origin/dest cannot be resolved -> fallback.
-    route = resolve_taxi_route_names(
+    clearance = resolve_taxi_clearance(
         icao="EDDF",
         origin_name="A12",
         dest_name="25L",
         client=EmptyClient(),
     )
-    assert route is None
+    assert clearance is None
 
 
 def test_maybe_compute_uses_flow_spec_and_merged_variables():
-    route = maybe_compute_taxi_route(
+    clearance = maybe_compute_taxi_route(
         flow_slug="taxi-v1",
         icao="EDDF",
         variables={"stand": "A12", "runway": "25L", "taxi_route": "Alpha, Bravo"},
         client=FakeRouteClient(),
     )
-    assert route == "Lima 7, November"
+    assert clearance["taxi_route"] == "Lima 7, November"
+    assert clearance["crossing_runways"] == []
 
 
 def test_maybe_compute_skips_unknown_flow():

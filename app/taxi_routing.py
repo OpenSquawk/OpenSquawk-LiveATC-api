@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import heapq
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -87,15 +88,32 @@ def taxiway_graph_query(
     dest_lon: float,
     radius_m: float,
 ) -> str:
+    # Runways are fetched alongside taxiways (same round-trip) so the route can
+    # be tested for runway crossings. They are NOT added to the routing graph.
     return f"""
 [out:json][timeout:90];
 (
   way["aeroway"="taxiway"](around:{radius_m},{origin_lat},{origin_lon});
   way["aeroway"="taxiway"](around:{radius_m},{dest_lat},{dest_lon});
+  way["aeroway"="runway"](around:{radius_m},{origin_lat},{origin_lon});
+  way["aeroway"="runway"](around:{radius_m},{dest_lat},{dest_lon});
 );
 (._;>;);
 out body;
 """
+
+
+def _collect_nodes(elements: list[Any]) -> dict[int, GraphNode]:
+    nodes: dict[int, GraphNode] = {}
+    for element in elements:
+        if not isinstance(element, dict) or element.get("type") != "node":
+            continue
+        node_id = element.get("id")
+        lat = element.get("lat")
+        lon = element.get("lon")
+        if isinstance(node_id, int) and isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+            nodes[node_id] = GraphNode(id=node_id, lat=float(lat), lon=float(lon))
+    return nodes
 
 
 def parse_taxiway_graph(osm: dict[str, Any]) -> TaxiwayGraph:
@@ -103,22 +121,18 @@ def parse_taxiway_graph(osm: dict[str, Any]) -> TaxiwayGraph:
     if not isinstance(elements, list):
         return TaxiwayGraph(nodes={}, adjacency={}, edge_meta={})
 
+    # All node coordinates (taxiway + runway children), but only taxiway nodes
+    # end up in the routing graph so snapping never attaches to a runway node.
+    all_nodes = _collect_nodes(elements)
+    ways = [
+        el
+        for el in elements
+        if isinstance(el, dict)
+        and el.get("type") == "way"
+        and (el.get("tags") or {}).get("aeroway") == "taxiway"
+    ]
+
     nodes: dict[int, GraphNode] = {}
-    ways: list[dict[str, Any]] = []
-
-    for element in elements:
-        if not isinstance(element, dict):
-            continue
-        element_type = element.get("type")
-        if element_type == "node":
-            node_id = element.get("id")
-            lat = element.get("lat")
-            lon = element.get("lon")
-            if isinstance(node_id, int) and isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
-                nodes[node_id] = GraphNode(id=node_id, lat=float(lat), lon=float(lon))
-        elif element_type == "way":
-            ways.append(element)
-
     adjacency: dict[int, list[tuple[int, float]]] = {}
     edge_meta: dict[tuple[int, int], tuple[str | None, int]] = {}
 
@@ -143,15 +157,160 @@ def parse_taxiway_graph(osm: dict[str, Any]) -> TaxiwayGraph:
             if isinstance(node_id, int)
         ]
         for idx in range(len(way_nodes) - 1):
-            a = nodes.get(way_nodes[idx])
-            b = nodes.get(way_nodes[idx + 1])
+            a = all_nodes.get(way_nodes[idx])
+            b = all_nodes.get(way_nodes[idx + 1])
             if a is None or b is None:
                 continue
+            nodes[a.id] = a
+            nodes[b.id] = b
             distance_m = haversine_distance((a.lat, a.lon), (b.lat, b.lon))
             add_edge(GraphEdge(a.id, b.id, distance_m, way_id, name))
             add_edge(GraphEdge(b.id, a.id, distance_m, way_id, name))
 
     return TaxiwayGraph(nodes=nodes, adjacency=adjacency, edge_meta=edge_meta)
+
+
+def _runway_designators(tags: dict[str, Any]) -> list[str]:
+    """All spoken designators for a runway way, e.g. "07L/25R" -> ["07L", "25R"]."""
+    ref = tags.get("ref") or tags.get("ref:runway") or tags.get("ref:icao") or ""
+    return [part.strip().upper() for part in re.split(r"[/;,]", str(ref)) if part.strip()]
+
+
+def parse_runways(osm: dict[str, Any]) -> list[tuple[list[str], list[tuple[float, float]]]]:
+    """Extract runway centerlines as ``(designators, [(lat, lon), ...])``."""
+    elements = osm.get("elements")
+    if not isinstance(elements, list):
+        return []
+
+    node_coords = {nid: (n.lat, n.lon) for nid, n in _collect_nodes(elements).items()}
+    runways: list[tuple[list[str], list[tuple[float, float]]]] = []
+    for el in elements:
+        if not isinstance(el, dict) or el.get("type") != "way":
+            continue
+        tags = el.get("tags") or {}
+        if tags.get("aeroway") != "runway":
+            continue
+        designators = _runway_designators(tags)
+        if not designators:
+            continue
+        polyline = [
+            node_coords[nid]
+            for nid in el.get("nodes", [])
+            if isinstance(nid, int) and nid in node_coords
+        ]
+        if len(polyline) >= 2:
+            runways.append((designators, polyline))
+    return runways
+
+
+def _orientation(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float:
+    """Signed area sign of triangle abc (lon as x, lat as y)."""
+    return (b[1] - a[1]) * (c[0] - b[0]) - (b[0] - a[0]) * (c[1] - b[1])
+
+
+def _segments_cross(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+    p4: tuple[float, float],
+) -> bool:
+    """True when segment p1-p2 properly intersects segment p3-p4 (planar)."""
+    d1 = _orientation(p3, p4, p1)
+    d2 = _orientation(p3, p4, p2)
+    d3 = _orientation(p1, p2, p3)
+    d4 = _orientation(p1, p2, p4)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def _intersection_point(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+    p4: tuple[float, float],
+) -> tuple[float, float] | None:
+    """Intersection point (lat, lon) of segments p1-p2 and p3-p4, or None."""
+    x1, y1, x2, y2 = p1[1], p1[0], p2[1], p2[0]
+    x3, y3, x4, y4 = p3[1], p3[0], p4[1], p4[0]
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if denom == 0:
+        return None
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+    return (y1 + t * (y2 - y1), x1 + t * (x2 - x1))
+
+
+def _bearing(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Initial compass bearing in degrees from a to b."""
+    lat1, lat2 = math.radians(a[0]), math.radians(b[0])
+    d_lon = math.radians(b[1] - a[1])
+    y = math.sin(d_lon) * math.cos(lat2)
+    x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(d_lon)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def _angle_diff(a: float, b: float) -> float:
+    d = abs(a - b) % 360
+    return min(d, 360 - d)
+
+
+def _designator_heading(designator: str) -> int | None:
+    match = re.match(r"^(\d{1,2})", designator)
+    return int(match.group(1)) * 10 if match else None
+
+
+def _announced_designator(
+    designators: list[str],
+    polyline: list[tuple[float, float]],
+    crossing: tuple[float, float],
+) -> str:
+    """Pick which runway end to name, by the threshold nearer to the crossing.
+
+    A runway way runs poly[0] -> poly[-1]; the designator whose heading matches
+    that bearing has its threshold at poly[0] (you depart that threshold flying
+    along the way). Name whichever threshold the aircraft crosses closer to.
+    """
+    if len(designators) == 1:
+        return designators[0]
+
+    bearing = _bearing(polyline[0], polyline[-1])
+    start = min(
+        designators,
+        key=lambda d: _angle_diff(_designator_heading(d) or 0, bearing),
+    )
+    end = next((d for d in designators if d != start), start)
+    near_start = haversine_distance(crossing, polyline[0]) <= haversine_distance(crossing, polyline[-1])
+    return start if near_start else end
+
+
+def detect_crossings(
+    path_coords: list[tuple[float, float]],
+    runways: list[tuple[list[str], list[tuple[float, float]]]],
+    exclude: set[str],
+) -> list[str]:
+    """Runway designators the path crosses, in path order, excluding endpoints.
+
+    Each crossing is announced by the end nearer to where the path cuts the
+    runway (see ``_announced_designator``).
+    """
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for i in range(len(path_coords) - 1):
+        a, b = path_coords[i], path_coords[i + 1]
+        for designators, polyline in runways:
+            if exclude.intersection(designators):
+                continue
+            for j in range(len(polyline) - 1):
+                if _segments_cross(a, b, polyline[j], polyline[j + 1]):
+                    point = _intersection_point(a, b, polyline[j], polyline[j + 1])
+                    announced = (
+                        _announced_designator(designators, polyline, point)
+                        if point is not None
+                        else designators[0]
+                    )
+                    if announced not in seen:
+                        ordered.append(announced)
+                        seen.add(announced)
+                    break
+    return ordered
 
 
 def nearest_node(graph: TaxiwayGraph, lat: float, lon: float) -> Attachment | None:
@@ -420,6 +579,7 @@ def calculate_taxi_route(
             "route": None,
             "names": [],
             "names_collapsed": [],
+            "crossings": [],
             "diagnostics": {
                 "node_count": len(graph.nodes),
                 "edge_count": sum(len(edges) for edges in graph.adjacency.values()),
@@ -428,6 +588,13 @@ def calculate_taxi_route(
 
     path, total_distance_m = shortest
     names = path_names(graph, path)
+
+    # Runways the route crosses, excluding the endpoint runway itself (that is
+    # the holding point, announced separately as the departure/arrival runway).
+    path_coords = [(graph.nodes[nid].lat, graph.nodes[nid].lon) for nid in path if nid in graph.nodes]
+    exclude = _endpoint_runway_designators(origin_match) | _endpoint_runway_designators(dest_match)
+    crossings = detect_crossings(path_coords, parse_runways(graph_osm), exclude)
+
     return {
         "airport": airport_code or None,
         "origin": origin_payload,
@@ -440,8 +607,16 @@ def calculate_taxi_route(
         },
         "names": names,
         "names_collapsed": collapse_taxiway_names(names),
+        "crossings": crossings,
         "diagnostics": {
             "node_count": len(graph.nodes),
             "edge_count": sum(len(edges) for edges in graph.adjacency.values()),
         },
     }
+
+
+def _endpoint_runway_designators(match: GeocodeMatch | None) -> set[str]:
+    """Normalized runway aliases for an endpoint, to exclude from crossings."""
+    if match is None or match.feature.type != "runway":
+        return set()
+    return {alias.strip().upper() for alias in match.feature.aliases if alias.strip()}

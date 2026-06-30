@@ -41,9 +41,20 @@ variables:
     type: string
     initial: "Alpha, Bravo"
     mutable_by: action_only
-  hold_short:
+  # Runways the computed route crosses, in order. Drives both the spoken
+  # hold-short clause and the readback requirement. Empty list = no crossing.
+  # Default mirrors the legacy static clearance for when route autocompute is
+  # off or fails (e.g. demo flights with no ICAO).
+  crossing_runways:
+    type: list
+    initial:
+      - "07"
+    mutable_by: action_only
+  # Ready-to-speak hold-short clause, e.g. ", hold short runway 07" or "".
+  # Computed from crossing_runways; rendering "" cleanly drops the clause.
+  taxi_hold_clause:
     type: string
-    initial: "07"
+    initial: ", hold short runway 07"
     mutable_by: action_only
   tower_freq:
     type: string
@@ -387,7 +398,7 @@ states:
     phase: taxi
     name: "Ground Issues Taxi Instructions"
     description: "Ground controller issues detailed routing: runway, taxiway route, and hold-short point"
-    say_template: "{{callsign}}, taxi to runway {{runway}} via {{taxi_route}}, hold short runway {{hold_short}}"
+    say_template: "{{callsign}}, taxi to runway {{runway}} via {{taxi_route}}{{taxi_hold_clause}}"
     frequency: "121.800"
     frequency_name: "Ground"
 
@@ -409,13 +420,13 @@ states:
     phase: taxi
     name: "Pilot Reads Back Taxi Instructions"
     description: "Pilot reads back runway, taxi route, and hold-short point — runway and hold-short are mandatory"
-    expected_pilot_template: "Runway {{runway}} via {{taxi_route}}, hold short runway {{hold_short}}, {{callsign}}"
+    expected_pilot_template: "Runway {{runway}} via {{taxi_route}}{{taxi_hold_clause}}, {{callsign}}"
     frequency: "121.800"
     frequency_name: "Ground"
 
     readback_required:
       - runway
-      - hold_short
+      - crossing_runways
     readback_mode: simple
 
     ok_next:
@@ -437,7 +448,7 @@ states:
     phase: taxi
     name: "ATC Corrects Taxi Readback"
     description: "Controller repeats the runway and hold-short point for the pilot"
-    say_template: "Negative, {{callsign}}, say again: runway {{runway}}, hold short runway {{hold_short}}"
+    say_template: "Negative, {{callsign}}, say again: runway {{runway}}{{taxi_hold_clause}}"
     frequency: "121.800"
     frequency_name: "Ground"
 

@@ -314,6 +314,74 @@ def _fuzzy_ident_match(value: str, utterance: str) -> Optional[str]:
 # Core evaluator
 # ---------------------------------------------------------------------------
 
+def _match_readback_value(
+    expected_str: str,
+    utterance: str,
+) -> Tuple[bool, Optional[str], List[str]]:
+    """Match a single expected value against the utterance.
+
+    Returns ``(matched, matched_via, accepted_forms)``. Shared by scalar and
+    list-valued readback fields so they grade identically.
+    """
+    forms = spoken_forms(expected_str) if expected_str else []
+    matched = False
+    matched_via: Optional[str] = None
+
+    # 1. Check literal value and all static spoken forms
+    for form in forms:
+        if form and re.search(re.escape(form), utterance, re.IGNORECASE):
+            matched = True
+            matched_via = form
+            break
+
+    # 1b. Digit-by-digit phonetic, accepting ICAO radio variants
+    #     (wun, tree, fife, niner, fower …) which the static spoken forms
+    #     above don't include — e.g. QNH 1013 read as "wun zero wun tree",
+    #     or frequency 125.350 as "wun too fife decimal tree fife zero"
+    #     (the separator optionally swallows a spoken "decimal"/"point").
+    if not matched and expected_str:
+        digits_only = re.sub(r'\D', '', expected_str)
+        # Frequencies are routinely read without the trailing zero: "125.35"
+        # for 125.350, "118.7" for 118.700.  Accept the value with trailing
+        # zeros of the decimal dropped, keeping at least the 3-digit MHz part.
+        # (candidate digits, must_end) — the trailing-zero-dropped form must
+        # not be followed by another digit, so a wrong final digit is caught.
+        digit_candidates = [(digits_only, False)]
+        if re.match(r'^\d{3}\.\d+$', expected_str) and digits_only.endswith('0'):
+            trimmed = digits_only.rstrip('0')
+            if len(trimmed) >= 3 and trimmed != digits_only:
+                digit_candidates.append((trimmed, True))
+        for cand, must_end in digit_candidates:
+            if len(cand) >= 2:
+                seq = _DIGIT_SEQ_SEP.join(_DIGIT_PHONETICS[d] for d in cand)
+                if must_end:
+                    seq += rf'(?!{_DIGIT_SEQ_SEP}{_ANY_DIGIT_WORD})'
+                if re.search(seq, utterance, re.IGNORECASE):
+                    matched = True
+                    matched_via = "digit_phonetic"
+                    break
+
+    # 2. Check ICAO phonetic sequential pattern for identifiers
+    if not matched and expected_str and _value_is_icao_ident(expected_str):
+        pattern = _icao_identifier_regex(expected_str)
+        try:
+            if re.search(pattern, utterance, re.IGNORECASE):
+                matched = True
+                matched_via = "icao_phonetic"
+        except re.error:
+            pass  # malformed pattern — skip
+
+    # 3. Fuzzy match for word-pronounced SID/STAR names ("Tobak two echo"
+    #    transcribed as "Tobacco too Echo").
+    if not matched and expected_str:
+        fuzzy = _fuzzy_ident_match(expected_str, utterance)
+        if fuzzy is not None:
+            matched = True
+            matched_via = fuzzy
+
+    return matched, matched_via, forms
+
+
 def evaluate_readback_simple(
     pilot_utterance: str,
     readback_required: List[str],
@@ -339,63 +407,29 @@ def evaluate_readback_simple(
 
     for field in readback_required:
         expected = variables.get(field)
+
+        # List-valued field: every element must be read back. An empty list
+        # requires nothing (e.g. crossing_runways == [] when the route crosses
+        # no runways), so the field passes trivially.
+        if isinstance(expected, list):
+            for item in expected:
+                item_str = "" if item is None else str(item).strip()
+                if not item_str:
+                    continue
+                matched, matched_via, forms = _match_readback_value(item_str, utterance)
+                reports.append({
+                    "field": field,
+                    "expected": item_str,
+                    "matched": matched,
+                    "matched_via": matched_via,
+                    "accepted_forms": list(dict.fromkeys(forms)),
+                })
+                if not matched:
+                    missing.append(f"{field}:{item_str}")
+            continue
+
         expected_str = "" if expected is None else str(expected).strip()
-
-        forms = spoken_forms(expected_str) if expected_str else []
-        matched = False
-        matched_via: Optional[str] = None
-
-        # 1. Check literal value and all static spoken forms
-        for form in forms:
-            if form and re.search(re.escape(form), utterance, re.IGNORECASE):
-                matched = True
-                matched_via = form
-                break
-
-        # 1b. Digit-by-digit phonetic, accepting ICAO radio variants
-        #     (wun, tree, fife, niner, fower …) which the static spoken forms
-        #     above don't include — e.g. QNH 1013 read as "wun zero wun tree",
-        #     or frequency 125.350 as "wun too fife decimal tree fife zero"
-        #     (the separator optionally swallows a spoken "decimal"/"point").
-        if not matched and expected_str:
-            digits_only = re.sub(r'\D', '', expected_str)
-            # Frequencies are routinely read without the trailing zero: "125.35"
-            # for 125.350, "118.7" for 118.700.  Accept the value with trailing
-            # zeros of the decimal dropped, keeping at least the 3-digit MHz part.
-            # (candidate digits, must_end) — the trailing-zero-dropped form must
-            # not be followed by another digit, so a wrong final digit is caught.
-            digit_candidates = [(digits_only, False)]
-            if re.match(r'^\d{3}\.\d+$', expected_str) and digits_only.endswith('0'):
-                trimmed = digits_only.rstrip('0')
-                if len(trimmed) >= 3 and trimmed != digits_only:
-                    digit_candidates.append((trimmed, True))
-            for cand, must_end in digit_candidates:
-                if len(cand) >= 2:
-                    seq = _DIGIT_SEQ_SEP.join(_DIGIT_PHONETICS[d] for d in cand)
-                    if must_end:
-                        seq += rf'(?!{_DIGIT_SEQ_SEP}{_ANY_DIGIT_WORD})'
-                    if re.search(seq, utterance, re.IGNORECASE):
-                        matched = True
-                        matched_via = "digit_phonetic"
-                        break
-
-        # 2. Check ICAO phonetic sequential pattern for identifiers
-        if not matched and expected_str and _value_is_icao_ident(expected_str):
-            pattern = _icao_identifier_regex(expected_str)
-            try:
-                if re.search(pattern, utterance, re.IGNORECASE):
-                    matched = True
-                    matched_via = "icao_phonetic"
-            except re.error:
-                pass  # malformed pattern — skip
-
-        # 3. Fuzzy match for word-pronounced SID/STAR names ("Tobak two echo"
-        #    transcribed as "Tobacco too Echo").
-        if not matched and expected_str:
-            fuzzy = _fuzzy_ident_match(expected_str, utterance)
-            if fuzzy is not None:
-                matched = True
-                matched_via = fuzzy
+        matched, matched_via, forms = _match_readback_value(expected_str, utterance)
 
         report: Dict[str, Any] = {
             "field": field,

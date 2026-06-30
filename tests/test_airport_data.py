@@ -97,12 +97,14 @@ class TestSessionRouteResolution:
         session_store._sessions.clear()
 
     def test_create_session_resolves_names_and_freqs(self):
+        from fastapi import BackgroundTasks
+
         from app.models import CreateSessionRequest
         from app.routes.session_routes import create_radio_session
         resp = create_radio_session(CreateSessionRequest(
             flow_slug="clearance-v1", airport_icao="EDDM",
             destination_icao="EDDM", no_chain=True,
-        ))
+        ), BackgroundTasks())
         assert resp.variables["ground_freq"].startswith("121.")
         assert resp.variables["destination"] == "Munich"
         assert resp.station_airport is not None
@@ -111,10 +113,12 @@ class TestSessionRouteResolution:
         assert "departure" in resp.station_airport.invented_positions
 
     def test_explicit_variables_override_resolution(self):
+        from fastapi import BackgroundTasks
+
         from app.models import CreateSessionRequest
         from app.routes.session_routes import create_radio_session
         resp = create_radio_session(CreateSessionRequest(
             flow_slug="clearance-v1", destination_icao="EDDM",
             variables={"destination": "Testfield"}, no_chain=True,
-        ))
+        ), BackgroundTasks())
         assert resp.variables["destination"] == "Testfield"

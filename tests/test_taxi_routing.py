@@ -5,6 +5,7 @@ from app.taxi_routing import (
     TaxiRouteError,
     calculate_taxi_route,
     collapse_taxiway_names,
+    detect_crossings,
     nearest_node,
     parse_taxiway_graph,
     path_names,
@@ -79,6 +80,47 @@ def test_parse_graph_creates_bidirectional_edges_and_shortest_path():
     assert path == [1, 2, 3, 4]
     assert total_m > 200
     assert path_names(graph, path) == ["L7", "L8", "N"]
+
+
+def test_parse_graph_excludes_runway_nodes_and_edges():
+    osm = {
+        "elements": GRAPH_OSM["elements"]
+        + [
+            {"type": "node", "id": 90, "lat": 49.999, "lon": 8.0015},
+            {"type": "node", "id": 91, "lat": 50.001, "lon": 8.0015},
+            {"type": "way", "id": 900, "nodes": [90, 91], "tags": {"aeroway": "runway", "ref": "09/27"}},
+        ]
+    }
+    graph = parse_taxiway_graph(osm)
+    # Runway nodes must not enter the routing graph (snapping would break).
+    assert set(graph.nodes) == {1, 2, 3, 4}
+    assert 90 not in graph.adjacency and 91 not in graph.adjacency
+
+
+def test_detect_crossings_finds_runway_intersecting_path_and_excludes_endpoint():
+    path = [(50.0, 8.0), (50.0, 8.001), (50.0, 8.002), (50.001, 8.002)]
+    runways = [
+        # North-south runway crossing the 2->3 segment; crossing (50.0) is nearer
+        # the south (36) threshold at 49.9995 than the north (18) at 50.003.
+        (["18", "36"], [(49.9995, 8.0015), (50.003, 8.0015)]),
+        # Destination runway crossing 1->2 → excluded by its designator.
+        (["25L", "07R"], [(49.999, 8.0005), (50.001, 8.0005)]),
+    ]
+    assert detect_crossings(path, runways, exclude={"25L"}) == ["36"]
+
+
+def test_detect_crossings_announces_nearer_runway_end():
+    runway = (["18", "36"], [(49.999, 8.001), (50.005, 8.001)])  # south=36, north=18
+    near_south = [(50.0005, 8.0), (50.0005, 8.002)]  # crosses near the 36 end
+    near_north = [(50.0045, 8.0), (50.0045, 8.002)]  # crosses near the 18 end
+    assert detect_crossings(near_south, [runway], exclude=set()) == ["36"]
+    assert detect_crossings(near_north, [runway], exclude=set()) == ["18"]
+
+
+def test_detect_crossings_returns_empty_when_no_intersection():
+    path = [(50.0, 8.0), (50.0, 8.001)]
+    runways = [(["09"], [(51.0, 9.0), (51.0, 9.001)])]
+    assert detect_crossings(path, runways, exclude=set()) == []
 
 
 def test_collapse_taxiway_names_removes_noisy_same_prefix_digit_variants():

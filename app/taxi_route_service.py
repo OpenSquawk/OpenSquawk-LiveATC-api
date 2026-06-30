@@ -98,7 +98,16 @@ def _get_client() -> OverpassClient:
     return _client
 
 
-def resolve_taxi_route_names(
+def _hold_clause(crossings: list[str]) -> str:
+    """Spoken hold-short clause for the crossed runways, or "" if none.
+
+    Empty string is deliberate: rendered into a say_template it cleanly drops
+    the clause, so "hold short runway X" is only spoken when a crossing exists.
+    """
+    return "".join(f", hold short runway {runway}" for runway in crossings)
+
+
+def resolve_taxi_clearance(
     *,
     icao: str,
     origin_name: str,
@@ -106,11 +115,16 @@ def resolve_taxi_route_names(
     origin_runway_point: RunwayPoint = "start",
     dest_runway_point: RunwayPoint = "start",
     client: OverpassClient | None = None,
-) -> str | None:
-    """Return a spoken-ready collapsed taxiway route string, or ``None``.
+) -> dict[str, Any] | None:
+    """Compute the taxi clearance variables for one route, or ``None``.
 
-    The string is the ``names_collapsed`` sequence joined with ", " — e.g.
-    ``"L7, N"``. Returns ``None`` on any resolution failure or empty route.
+    Returns the session-variable overrides the flow expects:
+      - ``taxi_route``: spoken collapsed taxiway sequence ("Lima 7, November")
+      - ``crossing_runways``: list of crossed runways (for readback grading)
+      - ``taxi_hold_clause``: ready-to-speak hold-short clause, or ""
+
+    ``None`` on any resolution failure or empty route, so the caller keeps the
+    flow's YAML defaults.
     """
 
     origin = GeocodeQuery(name=origin_name, runway_point=origin_runway_point)
@@ -133,7 +147,13 @@ def resolve_taxi_route_names(
     names = result.get("names_collapsed") or []
     if not names:
         return None
-    return phoneticize_route(", ".join(names))
+
+    crossings = [str(r) for r in (result.get("crossings") or [])]
+    return {
+        "taxi_route": phoneticize_route(", ".join(names)),
+        "crossing_runways": crossings,
+        "taxi_hold_clause": _hold_clause(crossings),
+    }
 
 
 def maybe_compute_taxi_route(
@@ -142,8 +162,8 @@ def maybe_compute_taxi_route(
     icao: str | None,
     variables: Mapping[str, Any],
     client: OverpassClient | None = None,
-) -> str | None:
-    """Compute the taxi route for a flow if it has a routing spec and an ICAO.
+) -> dict[str, Any] | None:
+    """Compute taxi clearance variables for a flow, or ``None``.
 
     ``variables`` is the merged session variable map (YAML defaults + overrides),
     so per-session stand/runway overrides are respected. Returns ``None`` when
@@ -162,7 +182,7 @@ def maybe_compute_taxi_route(
     if not origin_name or not dest_name:
         return None
 
-    return resolve_taxi_route_names(
+    return resolve_taxi_clearance(
         icao=icao,
         origin_name=origin_name,
         dest_name=dest_name,

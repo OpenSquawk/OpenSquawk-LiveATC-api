@@ -126,6 +126,8 @@ def create_session(
     flow: DecisionFlow,
     variable_overrides: dict | None = None,
     no_chain: bool = False,
+    airport_icao: str | None = None,
+    destination_icao: str | None = None,
 ) -> RuntimeSession:
     """Create and persist a new session for the given flow.
 
@@ -156,6 +158,8 @@ def create_session(
         main_flow=flow.slug,
         active_flow=flow.slug,
         current_state=flow.start_state,
+        airport_icao=(airport_icao.strip().upper() if airport_icao else None),
+        destination_icao=(destination_icao.strip().upper() if destination_icao else None),
         variables=variables,
         flags=flags,
         no_chain=no_chain,

@@ -1,11 +1,18 @@
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app.airport_data import AirportInfo, resolve_for_session
 from app.flow_loader import get_flow
 from app.models import CreateSessionRequest, CreateSessionResponse, ResolvedAirport
-from app.session_store import create_session, delete_session, get_session, list_session_ids
+from app.session_store import (
+    create_session,
+    delete_session,
+    get_session,
+    list_session_ids,
+    save_session,
+)
+from app.taxi_route_service import TAXI_FLOW_SPECS, maybe_compute_taxi_route
 from app.template_renderer import render_template
 
 
@@ -23,8 +30,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/radio", tags=["sessions"])
 
 
+def _compute_taxi_route_in_background(session_id: str, flow_slug: str, icao: str) -> None:
+    """Resolve the OSM taxi route and write it onto the live session.
+
+    Runs after the create response is sent, so the live Overpass call never
+    blocks session creation. The taxi clearance is issued several R/T exchanges
+    later, so the result is in place by the time the flow renders it; if the
+    computation is slow or fails, the YAML default simply stands.
+    """
+    session = get_session(session_id)
+    if session is None:
+        return
+    computed = maybe_compute_taxi_route(flow_slug=flow_slug, icao=icao, variables=session.variables)
+    if not computed:
+        return
+    # Re-fetch so we write onto the freshest session snapshot, then persist.
+    session = get_session(session_id)
+    if session is None:
+        return
+    session.variables.update(computed)
+    save_session(session)
+    logger.info("TAXI ROUTE  session=%.8s  %s  →  %s", session_id, icao, computed.get("taxi_route"))
+
+
 @router.post("/session", response_model=CreateSessionResponse, status_code=201)
-def create_radio_session(body: CreateSessionRequest):
+def create_radio_session(body: CreateSessionRequest, background: BackgroundTasks):
     """Create a new training session for the given flow."""
     try:
         flow = get_flow(body.flow_slug)
@@ -37,7 +67,37 @@ def create_radio_session(body: CreateSessionRequest):
     resolution = resolve_for_session(body.airport_icao, body.destination_icao)
     merged_overrides = {**resolution.variables, **(body.variables or {})}
 
-    session = create_session(flow, variable_overrides=merged_overrides, no_chain=body.no_chain)
+    # Compute the real OSM taxi route and use it in place of the YAML default.
+    # Timing strategy:
+    #   - Entry flow IS a taxi flow (taxi-only training): the clearance comes
+    #     within seconds, so compute synchronously and let the frontend show a
+    #     "calculating taxi route" spinner over the create request.
+    #   - Taxi flow reached by chaining (full departure): compute in the
+    #     background; minutes of R/T happen first, so it's ready in time.
+    # A caller-supplied taxi_route always wins; failure keeps the YAML default.
+    autocompute = "taxi_route" not in (body.variables or {}) and bool(body.airport_icao)
+    compute_sync = autocompute and flow.slug in TAXI_FLOW_SPECS
+    if compute_sync:
+        computed = maybe_compute_taxi_route(
+            flow_slug=flow.slug,
+            icao=body.airport_icao,
+            variables={**{k: v.initial for k, v in flow.variables.items()}, **merged_overrides},
+        )
+        if computed:
+            merged_overrides.update(computed)
+
+    session = create_session(
+        flow,
+        variable_overrides=merged_overrides,
+        no_chain=body.no_chain,
+        airport_icao=body.airport_icao,
+        destination_icao=body.destination_icao,
+    )
+
+    if autocompute and not compute_sync:
+        background.add_task(
+            _compute_taxi_route_in_background, session.session_id, flow.slug, body.airport_icao
+        )
 
     # Render the expected pilot phrase for the start state so the frontend
     # can show the correct hint immediately without a round-trip transmission.
