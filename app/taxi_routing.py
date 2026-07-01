@@ -81,22 +81,67 @@ class TaxiwayGraph:
     edge_meta: dict[tuple[int, int], tuple[str | None, int]]
 
 
+# Surface types that may bridge gaps where OSM maps stands, apron lead-ins, or
+# runway turnoffs as separate ways instead of taxiways. Opt-in via
+# include_connectors; weighted higher than taxiways so real taxiways win.
+_CONNECTOR_AEROWAYS = ("parking_position", "holding_position", "apron")
+_CONNECTOR_PENALTY = 5.0
+
+
+def _graph_aeroway_types(include_connectors: bool) -> list[str]:
+    # Runways are fetched so the route can be tested for crossings; they are NOT
+    # added to the routing graph (see parse_taxiway_graph).
+    types = ["taxiway", "runway"]
+    if include_connectors:
+        types.extend(_CONNECTOR_AEROWAYS)
+    return types
+
+
 def taxiway_graph_query(
     origin_lat: float,
     origin_lon: float,
     dest_lat: float,
     dest_lon: float,
     radius_m: float,
+    include_connectors: bool = False,
 ) -> str:
-    # Runways are fetched alongside taxiways (same round-trip) so the route can
-    # be tested for runway crossings. They are NOT added to the routing graph.
+    """Radius-scoped graph query around both endpoints (no airport area)."""
+    selectors = "\n".join(
+        f'  way["aeroway"="{t}"](around:{radius_m},{lat},{lon});'
+        for t in _graph_aeroway_types(include_connectors)
+        for lat, lon in ((origin_lat, origin_lon), (dest_lat, dest_lon))
+    )
     return f"""
 [out:json][timeout:90];
 (
-  way["aeroway"="taxiway"](around:{radius_m},{origin_lat},{origin_lon});
-  way["aeroway"="taxiway"](around:{radius_m},{dest_lat},{dest_lon});
-  way["aeroway"="runway"](around:{radius_m},{origin_lat},{origin_lon});
-  way["aeroway"="runway"](around:{radius_m},{dest_lat},{dest_lon});
+{selectors}
+);
+(._;>;);
+out body;
+"""
+
+
+def taxiway_graph_area_query(airport: str, include_connectors: bool = False) -> str:
+    """Airport-area-scoped graph query: all taxiways inside the aerodrome.
+
+    Preferred when an ICAO is known — it cannot miss middle taxiways on large
+    fields the way a radius can, and the query is identical per airport so the
+    Overpass TTL cache keys on the airport.
+    """
+    code = airport.strip().upper()
+    selectors = "\n".join(
+        f'  way(area.airport)["aeroway"="{t}"];'
+        for t in _graph_aeroway_types(include_connectors)
+    )
+    return f"""
+[out:json][timeout:90];
+(
+  area["aeroway"="aerodrome"]["ref:icao"="{code}"];
+  area["aeroway"="aerodrome"]["icao"="{code}"];
+  area["aeroway"="aerodrome"]["ref"="{code}"];
+)->.airport;
+(
+{selectors}
 );
 (._;>;);
 out body;
@@ -116,29 +161,32 @@ def _collect_nodes(elements: list[Any]) -> dict[int, GraphNode]:
     return nodes
 
 
-def parse_taxiway_graph(osm: dict[str, Any]) -> TaxiwayGraph:
+def parse_taxiway_graph(osm: dict[str, Any], include_connectors: bool = False) -> TaxiwayGraph:
     elements = osm.get("elements")
     if not isinstance(elements, list):
         return TaxiwayGraph(nodes={}, adjacency={}, edge_meta={})
 
-    # All node coordinates (taxiway + runway children), but only taxiway nodes
-    # end up in the routing graph so snapping never attaches to a runway node.
+    # All node coordinates (incl. runway children), but only routable surfaces
+    # end up in the graph so snapping never attaches to a runway node.
     all_nodes = _collect_nodes(elements)
+    allowed = {"taxiway"}
+    if include_connectors:
+        allowed.update(_CONNECTOR_AEROWAYS)
     ways = [
         el
         for el in elements
         if isinstance(el, dict)
         and el.get("type") == "way"
-        and (el.get("tags") or {}).get("aeroway") == "taxiway"
+        and (el.get("tags") or {}).get("aeroway") in allowed
     ]
 
     nodes: dict[int, GraphNode] = {}
     adjacency: dict[int, list[tuple[int, float]]] = {}
     edge_meta: dict[tuple[int, int], tuple[str | None, int]] = {}
 
-    def add_edge(edge: GraphEdge) -> None:
-        adjacency.setdefault(edge.u, []).append((edge.v, edge.distance_m))
-        edge_meta[(edge.u, edge.v)] = (edge.name, edge.way_id)
+    def add_edge(u: int, v: int, weight: float, way_id: int, name: str | None) -> None:
+        adjacency.setdefault(u, []).append((v, weight))
+        edge_meta[(u, v)] = (name, way_id)
 
     for way in ways:
         way_id = way.get("id")
@@ -150,6 +198,9 @@ def parse_taxiway_graph(osm: dict[str, Any]) -> TaxiwayGraph:
             raw_name = tags.get("name") or tags.get("ref")
             if raw_name is not None:
                 name = str(raw_name)
+        # Connector surfaces cost more so the router only uses them to bridge
+        # gaps the taxiway network cannot.
+        penalty = 1.0 if tags.get("aeroway") == "taxiway" else _CONNECTOR_PENALTY
 
         way_nodes = [
             node_id
@@ -163,9 +214,9 @@ def parse_taxiway_graph(osm: dict[str, Any]) -> TaxiwayGraph:
                 continue
             nodes[a.id] = a
             nodes[b.id] = b
-            distance_m = haversine_distance((a.lat, a.lon), (b.lat, b.lon))
-            add_edge(GraphEdge(a.id, b.id, distance_m, way_id, name))
-            add_edge(GraphEdge(b.id, a.id, distance_m, way_id, name))
+            weight = haversine_distance((a.lat, a.lon), (b.lat, b.lon)) * penalty
+            add_edge(a.id, b.id, weight, way_id, name)
+            add_edge(b.id, a.id, weight, way_id, name)
 
     return TaxiwayGraph(nodes=nodes, adjacency=adjacency, edge_meta=edge_meta)
 
@@ -477,18 +528,80 @@ def _resolve_endpoint(
     return lat, lon, match
 
 
+def _reachable_nodes(graph: TaxiwayGraph, src: int) -> set[int]:
+    """All node ids reachable from ``src`` (connected component), via DFS."""
+    seen = {src}
+    stack = [src]
+    while stack:
+        u = stack.pop()
+        for v, _ in graph.adjacency.get(u, []):
+            if v not in seen:
+                seen.add(v)
+                stack.append(v)
+    return seen
+
+
+def _build_diagnostics(
+    graph: TaxiwayGraph,
+    start_attach: Attachment | None,
+    end_attach: Attachment | None,
+    *,
+    same_component: bool,
+) -> dict[str, Any]:
+    way_ids = {way_id for _, way_id in graph.edge_meta.values()}
+    return {
+        "node_count": len(graph.nodes),
+        "way_count": len(way_ids),
+        "edge_count": sum(len(edges) for edges in graph.adjacency.values()),
+        "start_attach_distance_m": start_attach.distance_m if start_attach else None,
+        "end_attach_distance_m": end_attach.distance_m if end_attach else None,
+        "same_component": same_component,
+    }
+
+
+def _fetch_graph(
+    overpass: OverpassClient,
+    airport_code: str,
+    o_lat: float,
+    o_lon: float,
+    d_lat: float,
+    d_lon: float,
+    radius_m: float,
+    include_connectors: bool,
+) -> tuple[dict[str, Any], TaxiwayGraph]:
+    """Prefer an airport-area graph when an ICAO is known; fall back to radius.
+
+    The area query cannot miss middle taxiways on large fields. If the aerodrome
+    area cannot be resolved (graph empty), fall back to the radius query.
+    """
+    if airport_code:
+        osm = overpass.fetch_json(taxiway_graph_area_query(airport_code, include_connectors))
+        graph = parse_taxiway_graph(osm, include_connectors=include_connectors)
+        if graph.nodes:
+            return osm, graph
+    osm = overpass.fetch_json(
+        taxiway_graph_query(o_lat, o_lon, d_lat, d_lon, radius_m, include_connectors)
+    )
+    return osm, parse_taxiway_graph(osm, include_connectors=include_connectors)
+
+
 def calculate_taxi_route(
     *,
     origin: GeocodeQuery,
     dest: GeocodeQuery,
     airport: str | None = None,
     radius_m: float = 5000,
+    include_connectors: bool = False,
     client: OverpassClient | None = None,
 ) -> dict[str, Any]:
     """Calculate a shortest taxiway route and return the compatibility payload.
 
     This is the main entry point for future API routes or flow service actions.
     It performs live Overpass reads unless the caller injects a fake client.
+
+    When ``include_connectors`` is set, parking/holding/apron ways are added to
+    the graph (weighted higher than taxiways) so routing can bridge gaps where
+    OSM maps those surfaces separately.
     """
 
     overpass = client or OverpassClient()
@@ -548,8 +661,9 @@ def calculate_taxi_route(
         client=overpass,
     )
 
-    graph_osm = overpass.fetch_json(taxiway_graph_query(o_lat, o_lon, d_lat, d_lon, radius_m))
-    graph = parse_taxiway_graph(graph_osm)
+    graph_osm, graph = _fetch_graph(
+        overpass, airport_code, o_lat, o_lon, d_lat, d_lon, radius_m, include_connectors
+    )
     start_attach = nearest_node(graph, o_lat, o_lon)
     end_attach = nearest_node(graph, d_lat, d_lon)
 
@@ -570,6 +684,9 @@ def calculate_taxi_route(
 
     shortest = shortest_path(graph, start_attach.node_id, end_attach.node_id)
     if shortest is None:
+        # Explain WHY there is no route: a disconnected graph (endpoints in
+        # different components) reads very differently from a too-sparse one.
+        same_component = end_attach.node_id in _reachable_nodes(graph, start_attach.node_id)
         return {
             "airport": airport_code or None,
             "origin": origin_payload,
@@ -580,18 +697,23 @@ def calculate_taxi_route(
             "names": [],
             "names_collapsed": [],
             "crossings": [],
-            "diagnostics": {
-                "node_count": len(graph.nodes),
-                "edge_count": sum(len(edges) for edges in graph.adjacency.values()),
-            },
+            "diagnostics": _build_diagnostics(
+                graph, start_attach, end_attach, same_component=same_component
+            ),
         }
 
-    path, total_distance_m = shortest
+    path, _ = shortest
     names = path_names(graph, path)
+
+    # Real geometric length, independent of connector edge penalties.
+    path_coords = [(graph.nodes[nid].lat, graph.nodes[nid].lon) for nid in path if nid in graph.nodes]
+    total_distance_m = sum(
+        haversine_distance(path_coords[i], path_coords[i + 1])
+        for i in range(len(path_coords) - 1)
+    )
 
     # Runways the route crosses, excluding the endpoint runway itself (that is
     # the holding point, announced separately as the departure/arrival runway).
-    path_coords = [(graph.nodes[nid].lat, graph.nodes[nid].lon) for nid in path if nid in graph.nodes]
     exclude = _endpoint_runway_designators(origin_match) | _endpoint_runway_designators(dest_match)
     crossings = detect_crossings(path_coords, parse_runways(graph_osm), exclude)
 
@@ -608,10 +730,7 @@ def calculate_taxi_route(
         "names": names,
         "names_collapsed": collapse_taxiway_names(names),
         "crossings": crossings,
-        "diagnostics": {
-            "node_count": len(graph.nodes),
-            "edge_count": sum(len(edges) for edges in graph.adjacency.values()),
-        },
+        "diagnostics": _build_diagnostics(graph, start_attach, end_attach, same_component=True),
     }
 
 

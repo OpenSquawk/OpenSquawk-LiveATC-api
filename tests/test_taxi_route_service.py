@@ -28,8 +28,21 @@ GRAPH_OSM = {
 
 
 class FakeRouteClient:
+    GRAPH = GRAPH_OSM
+
     def fetch_json(self, query: str):
-        if 'area["aeroway"="aerodrome"]' in query:
+        # Graph query (radius or airport-area) — recurses child nodes via (._;>;).
+        if "(._;>;)" in query:
+            return self.GRAPH
+        if "way(600)" in query:  # runway endpoint geometry
+            return {
+                "elements": [
+                    {"type": "way", "id": 600, "nodes": [601, 602]},
+                    {"type": "node", "id": 601, "lat": 50.001, "lon": 8.002},
+                    {"type": "node", "id": 602, "lat": 50.5, "lon": 8.5},
+                ]
+            }
+        if 'area["aeroway"="aerodrome"]' in query:  # airport features
             return {
                 "elements": [
                     {"type": "node", "id": 500, "lat": 50.0, "lon": 8.0, "tags": {"aeroway": "parking_position", "ref": "A12"}},
@@ -42,16 +55,6 @@ class FakeRouteClient:
                     },
                 ]
             }
-        if "way(600)" in query:
-            return {
-                "elements": [
-                    {"type": "way", "id": 600, "nodes": [601, 602]},
-                    {"type": "node", "id": 601, "lat": 50.001, "lon": 8.002},
-                    {"type": "node", "id": 602, "lat": 50.5, "lon": 8.5},
-                ]
-            }
-        if 'way["aeroway"="taxiway"]' in query:
-            return GRAPH_OSM
         raise AssertionError(f"unexpected query: {query}")
 
 
@@ -74,10 +77,7 @@ GRAPH_OSM_WITH_CROSSING = {
 
 
 class CrossingRouteClient(FakeRouteClient):
-    def fetch_json(self, query: str):
-        if 'way["aeroway"="taxiway"]' in query:
-            return GRAPH_OSM_WITH_CROSSING
-        return super().fetch_json(query)
+    GRAPH = GRAPH_OSM_WITH_CROSSING
 
 
 def test_resolve_detects_runway_crossing_and_builds_hold_clause():

@@ -10,6 +10,8 @@ from app.taxi_routing import (
     parse_taxiway_graph,
     path_names,
     shortest_path,
+    taxiway_graph_area_query,
+    taxiway_graph_query,
 )
 
 
@@ -28,7 +30,18 @@ GRAPH_OSM = {
 
 class FakeRouteClient:
     def fetch_json(self, query: str):
-        if 'area["aeroway"="aerodrome"]' in query:
+        # Graph query (radius or airport-area) — recurses child nodes via (._;>;).
+        if "(._;>;)" in query:
+            return GRAPH_OSM
+        if "way(600)" in query:  # runway endpoint geometry
+            return {
+                "elements": [
+                    {"type": "way", "id": 600, "nodes": [601, 602]},
+                    {"type": "node", "id": 601, "lat": 50.001, "lon": 8.002},
+                    {"type": "node", "id": 602, "lat": 50.5, "lon": 8.5},
+                ]
+            }
+        if 'area["aeroway"="aerodrome"]' in query:  # airport features
             return {
                 "elements": [
                     {
@@ -47,16 +60,6 @@ class FakeRouteClient:
                     },
                 ]
             }
-        if "way(600)" in query:
-            return {
-                "elements": [
-                    {"type": "way", "id": 600, "nodes": [601, 602]},
-                    {"type": "node", "id": 601, "lat": 50.001, "lon": 8.002},
-                    {"type": "node", "id": 602, "lat": 50.5, "lon": 8.5},
-                ]
-            }
-        if 'way["aeroway"="taxiway"]' in query:
-            return GRAPH_OSM
         raise AssertionError(f"unexpected query: {query}")
 
 
@@ -172,3 +175,97 @@ def test_name_query_without_airport_is_rejected_before_network():
 
     assert exc.value.code == "missing_airport"
     assert exc.value.status_code == 400
+
+
+# ── Known-gap: graph coverage (include_connectors) ──────────────────────────
+
+# Two taxiway stubs 1-2 and 3-4 with a gap; only a parking_position way bridges
+# nodes 2 and 3.
+CONNECTOR_OSM = {
+    "elements": [
+        {"type": "node", "id": 1, "lat": 50.0, "lon": 8.0},
+        {"type": "node", "id": 2, "lat": 50.0, "lon": 8.001},
+        {"type": "node", "id": 3, "lat": 50.0, "lon": 8.002},
+        {"type": "node", "id": 4, "lat": 50.0, "lon": 8.003},
+        {"type": "way", "id": 100, "nodes": [1, 2], "tags": {"aeroway": "taxiway", "ref": "A"}},
+        {"type": "way", "id": 101, "nodes": [3, 4], "tags": {"aeroway": "taxiway", "ref": "B"}},
+        {"type": "way", "id": 200, "nodes": [2, 3], "tags": {"aeroway": "parking_position", "ref": "V1"}},
+    ]
+}
+
+
+def test_connectors_off_leaves_gap_unbridged():
+    graph = parse_taxiway_graph(CONNECTOR_OSM)
+    # The parking_position way is ignored, so 1 and 4 are disconnected.
+    assert shortest_path(graph, 1, 4) is None
+
+
+def test_connectors_on_bridges_gap_via_parking_position():
+    graph = parse_taxiway_graph(CONNECTOR_OSM, include_connectors=True)
+    result = shortest_path(graph, 1, 4)
+    assert result is not None
+    assert result[0] == [1, 2, 3, 4]
+
+
+def test_radius_query_includes_connectors_only_when_requested():
+    assert "parking_position" not in taxiway_graph_query(50.0, 8.0, 50.0, 8.0, 1000)
+    with_conn = taxiway_graph_query(50.0, 8.0, 50.0, 8.0, 1000, include_connectors=True)
+    assert '["aeroway"="parking_position"]' in with_conn
+    assert '["aeroway"="holding_position"]' in with_conn
+
+
+# ── Known-gap: airport-area scope ───────────────────────────────────────────
+
+def test_area_query_scopes_to_airport_not_radius():
+    query = taxiway_graph_area_query("EDDF")
+    assert 'area["aeroway"="aerodrome"]["ref:icao"="EDDF"]' in query
+    assert 'way(area.airport)["aeroway"="taxiway"]' in query
+    assert "around:" not in query
+
+
+# ── Known-gap: no-path diagnostics ──────────────────────────────────────────
+
+# Two taxiway components far apart, so snapped endpoints land in different ones.
+DISCONNECTED_OSM = {
+    "elements": [
+        {"type": "node", "id": 1, "lat": 50.0, "lon": 8.0},
+        {"type": "node", "id": 2, "lat": 50.0, "lon": 8.001},
+        {"type": "node", "id": 3, "lat": 50.10, "lon": 8.10},
+        {"type": "node", "id": 4, "lat": 50.10, "lon": 8.101},
+        {"type": "way", "id": 100, "nodes": [1, 2], "tags": {"aeroway": "taxiway", "ref": "A"}},
+        {"type": "way", "id": 101, "nodes": [3, 4], "tags": {"aeroway": "taxiway", "ref": "B"}},
+    ]
+}
+
+
+class DisconnectedClient:
+    def fetch_json(self, query: str):
+        assert "(._;>;)" in query  # coords-only route uses the radius graph query
+        return DISCONNECTED_OSM
+
+
+def test_no_path_diagnostics_report_disconnected_components():
+    result = calculate_taxi_route(
+        origin=GeocodeQuery(lat=50.0, lon=8.0),
+        dest=GeocodeQuery(lat=50.10, lon=8.10),
+        client=DisconnectedClient(),
+    )
+    assert result["route"] is None
+    diag = result["diagnostics"]
+    assert diag["same_component"] is False
+    assert diag["node_count"] == 4
+    assert diag["way_count"] == 2
+    assert diag["start_attach_distance_m"] is not None
+    assert diag["end_attach_distance_m"] is not None
+
+
+def test_diagnostics_report_same_component_on_success():
+    result = calculate_taxi_route(
+        origin=GeocodeQuery(lat=50.0, lon=8.0),
+        dest=GeocodeQuery(lat=50.001, lon=8.002),
+        radius_m=2500,
+        client=FakeRouteClient(),
+    )
+    assert result["route"] is not None
+    assert result["diagnostics"]["same_component"] is True
+    assert result["diagnostics"]["way_count"] >= 1

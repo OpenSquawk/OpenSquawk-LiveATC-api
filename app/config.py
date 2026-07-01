@@ -39,6 +39,10 @@ TAXI_ROUTE_AUTOCOMPUTE = os.getenv("TAXI_ROUTE_AUTOCOMPUTE", "true").lower() in 
 # Per-Overpass-call time budget for taxi route computation, in ms. Two calls run
 # (airport features + taxiway graph), so worst case is ~2x this before fallback.
 TAXI_ROUTE_TIMEOUT_MS = int(os.getenv("TAXI_ROUTE_TIMEOUT_MS", "8000"))
+# Add parking/holding/apron ways to the routing graph (weighted higher than
+# taxiways) so routing can bridge gaps where OSM maps those surfaces separately.
+# Off by default to preserve taxiway-only routing.
+TAXI_ROUTE_INCLUDE_CONNECTORS = os.getenv("TAXI_ROUTE_INCLUDE_CONNECTORS", "false").lower() in ("1", "true", "yes")
 
 _DEFAULT_ORIGINS = ",".join([
     "https://opensquawk.de",

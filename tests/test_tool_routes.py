@@ -42,8 +42,9 @@ class FakeOverpassClient:
     """Routes Overpass queries to canned OSM fixtures by query content."""
 
     def fetch_json(self, query: str):
-        if 'area["aeroway"="aerodrome"]' in query:
-            return AIRPORT_FEATURES
+        # Graph query (radius or airport-area) — recurses child nodes via (._;>;).
+        if "(._;>;)" in query:
+            return GRAPH_OSM
         if "way(600)" in query:
             return {
                 "elements": [
@@ -52,8 +53,8 @@ class FakeOverpassClient:
                     {"type": "node", "id": 602, "lat": 50.5, "lon": 8.5},
                 ]
             }
-        if 'way["aeroway"="taxiway"]' in query:
-            return GRAPH_OSM
+        if 'area["aeroway"="aerodrome"]' in query:
+            return AIRPORT_FEATURES
         raise AssertionError(f"unexpected query: {query}")
 
 

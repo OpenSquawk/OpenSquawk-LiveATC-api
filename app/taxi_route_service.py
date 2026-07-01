@@ -134,6 +134,7 @@ def resolve_taxi_clearance(
             origin=origin,
             dest=dest,
             airport=icao,
+            include_connectors=config.TAXI_ROUTE_INCLUDE_CONNECTORS,
             client=client or _get_client(),
         )
     except Exception as exc:  # noqa: BLE001 - best-effort; never break session create

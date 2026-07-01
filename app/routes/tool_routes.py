@@ -102,6 +102,9 @@ def taxiroute(
     dest_name: str | None = None,
     dest_runway_point: Literal["start", "end", "center"] = "start",
     radius: float = Query(5000, gt=0, le=50000, description="Taxiway search radius (m)"),
+    include_connectors: bool = Query(
+        False, description="Add parking/holding/apron ways to bridge taxiway gaps"
+    ),
     client: OverpassClient = Depends(get_overpass_client),
 ):
     """Compute a taxi route between two points or named aerodrome features."""
@@ -125,6 +128,7 @@ def taxiroute(
             dest=dest,
             airport=airport,
             radius_m=radius,
+            include_connectors=include_connectors,
             client=client,
         )
     except TaxiRouteError as exc:
