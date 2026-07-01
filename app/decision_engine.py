@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,6 +26,7 @@ from app.models import (
     DecisionState,
     LoopDetectedError,
     RuntimeSession,
+    TelemetryCondition,
     Transition,
     TransitionTrace,
 )
@@ -781,6 +783,9 @@ def process_timeout(session_id: str) -> DecisionResponse:
         for t in current_state.auto_transitions:
             if t.trigger is not None:
                 continue
+            # Telemetry-gated edges only fire on telemetry ticks, never silence.
+            if t.telemetry is not None:
+                continue
             if t.condition is None or evaluate_guard(t.condition, session.variables, session.flags):
                 timeout_trans = t
                 break
@@ -901,4 +906,289 @@ def process_timeout(session_id: str) -> DecisionResponse:
         fallback_reason=None,
         auto_advanced_states=auto_advanced_states,
         session_complete=session_complete_t,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Telemetry handler (sim-bridge driven, proactive ATC)
+# ---------------------------------------------------------------------------
+
+_TELEMETRY_OPS = {
+    "eq": lambda a, b: a == b,
+    "ne": lambda a, b: a != b,
+    "gt": lambda a, b: a > b,
+    "lt": lambda a, b: a < b,
+    "gte": lambda a, b: a >= b,
+    "lte": lambda a, b: a <= b,
+}
+
+
+def _coerce_like(left: Any, right: Any) -> Tuple[Any, Any]:
+    """Coerce both sides to a comparable type (bool for booleans, else float)."""
+    if isinstance(right, bool) or isinstance(left, bool):
+        def _as_bool(v: Any) -> bool:
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, (int, float)):
+                return v != 0
+            if isinstance(v, str):
+                return v.strip().lower() in ("1", "true", "on", "yes")
+            return bool(v)
+        return _as_bool(left), _as_bool(right)
+    try:
+        return float(left), float(right)
+    except (TypeError, ValueError):
+        return left, right
+
+
+def _eval_telemetry(cond: TelemetryCondition, telemetry: Dict[str, Any]) -> bool:
+    """True when the telemetry scalar satisfies the condition.
+
+    Missing telemetry (the bridge never reported this parameter) is always False
+    — a flow can never advance on telemetry it does not have.
+    """
+    if cond.parameter not in telemetry:
+        return False
+    raw = telemetry[cond.parameter]
+    if raw is None:
+        return False
+    left, right = _coerce_like(raw, cond.value)
+    op = _TELEMETRY_OPS.get(cond.operator)
+    if op is None:
+        return False
+    try:
+        return bool(op(left, right))
+    except TypeError:
+        return False
+
+
+def _no_op_telemetry_response(session: RuntimeSession, trace: List[TransitionTrace]) -> DecisionResponse:
+    """A telemetry tick that fired nothing — state and speech unchanged."""
+    return DecisionResponse(
+        session_id=session.session_id,
+        next_state_id=session.current_state,
+        active_flow=session.active_flow,
+        controller_say_template=None,
+        controller_say_rendered=None,
+        expected_pilot_template=None,
+        variables=dict(session.variables),
+        flags=dict(session.flags),
+        trace=trace,
+        fallback_used=False,
+        fallback_reason=None,
+        auto_advanced_states=[],
+        telemetry_fired=False,
+        session_complete=False,
+    )
+
+
+def _finalize_transition(
+    session: RuntimeSession,
+    flow: DecisionFlow,
+    current_state: DecisionState,
+    transition: Transition,
+    trace: List[TransitionTrace],
+    *,
+    match_reason: str,
+    history_utterance: str,
+) -> DecisionResponse:
+    """Apply a chosen transition and build the response.
+
+    Mirrors steps 9–13 of ``process_transmission`` for callers that have already
+    selected their transition by other means (telemetry). Handles flow
+    interrupts, non-pilot auto-advance, next_flow chaining and completion.
+    """
+    # Step 9: flow interrupt vs normal target
+    if transition.interrupt_flow:
+        interrupt_flow_def = get_flow(transition.interrupt_flow)
+        if transition.to not in interrupt_flow_def.states:
+            raise KeyError(
+                f"Interrupt entry state '{transition.to}' not found in flow '{transition.interrupt_flow}'"
+            )
+        push_flow(session, transition.interrupt_flow, transition.to)
+        flow = interrupt_flow_def
+        next_state = _get_state(flow, transition.to)
+        trace.append(_trace("flow_interrupt", f"Suspended → '{flow.slug}'@'{next_state.id}'"))
+    else:
+        if transition.to not in flow.states:
+            raise KeyError(f"Target state '{transition.to}' not found in flow '{flow.slug}'")
+        next_state = _get_state(flow, transition.to)
+
+    trace.append(_trace("transition", f"'{current_state.id}' → '{next_state.id}'"))
+
+    # Step 10–11: side effects + advance
+    _apply_transition_actions(transition, current_state, next_state, session, trace)
+    session.current_state = next_state.id
+
+    auto_advanced_states: List[str] = []
+    atc_say_template: Optional[str] = None
+
+    if next_state.role != "pilot":
+        if next_state.say_template:
+            atc_say_template = next_state.say_template
+        final_state_id, advanced, auto_transitions_taken = advance_through_non_pilot(
+            next_state.id, flow, session.variables, session.flags
+        )
+        auto_advanced_states = advanced
+        for sid in advanced:
+            trace.append(_trace("auto_advance", f"Auto-advanced through '{sid}'"))
+            if atc_say_template is None:
+                intermediate = flow.states.get(sid)
+                if intermediate and intermediate.say_template:
+                    atc_say_template = intermediate.say_template
+        for auto_trans in auto_transitions_taken:
+            action_msgs = execute_actions(auto_trans.on_exit_actions + auto_trans.on_enter_actions, session)
+            for msg in action_msgs:
+                trace.append(_trace("action_execute", f"auto_advance: {msg}"))
+        session.current_state = final_state_id
+        next_state = _get_state(flow, final_state_id)
+
+    prev_flow_slug = flow.slug
+    handle_flow_completion(session, flow)
+    if session.active_flow != prev_flow_slug:
+        flow = get_flow(session.active_flow)
+        next_state = _get_state(flow, session.current_state)
+        trace.append(_trace("flow_changed", f"Flow switched to '{flow.slug}' at '{next_state.id}'"))
+        if next_state.role != "pilot":
+            if next_state.say_template and atc_say_template is None:
+                atc_say_template = next_state.say_template
+            final_state_id, advanced2, auto_trans2 = advance_through_non_pilot(
+                next_state.id, flow, session.variables, session.flags
+            )
+            auto_advanced_states.extend(advanced2)
+            for sid in advanced2:
+                trace.append(_trace("auto_advance", f"Auto-advanced through '{sid}'"))
+                if atc_say_template is None:
+                    intermediate = flow.states.get(sid)
+                    if intermediate and intermediate.say_template:
+                        atc_say_template = intermediate.say_template
+            for auto_trans in auto_trans2:
+                action_msgs = execute_actions(
+                    auto_trans.on_exit_actions + auto_trans.on_enter_actions, session
+                )
+                for msg in action_msgs:
+                    trace.append(_trace("action_execute", f"auto_advance: {msg}"))
+            session.current_state = final_state_id
+            next_state = _get_state(flow, final_state_id)
+
+    # Step 12–13: render + persist
+    say_template = atc_say_template or next_state.say_template
+    rendered = render_template(say_template, session.variables)
+    expected = render_template(next_state.expected_pilot_template, session.variables)
+
+    final_flow = get_flow(session.active_flow)
+    session_complete = (
+        session.current_state in final_flow.end_states
+        and not session.flow_stack
+        and (final_flow.next_flow is None or session.no_chain)
+    )
+
+    session.decision_history.append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "pilot_utterance": history_utterance,
+        "previous_state": current_state.id,
+        "next_state": next_state.id,
+        "match_reason": match_reason,
+        "fallback_used": False,
+    })
+    save_session(session)
+
+    return DecisionResponse(
+        session_id=session.session_id,
+        next_state_id=next_state.id,
+        active_flow=session.active_flow,
+        controller_say_template=say_template,
+        controller_say_rendered=rendered,
+        expected_pilot_template=expected,
+        variables=dict(session.variables),
+        flags=dict(session.flags),
+        trace=trace,
+        fallback_used=False,
+        fallback_reason=None,
+        auto_advanced_states=auto_advanced_states,
+        telemetry_fired=(match_reason == "telemetry"),
+        session_complete=session_complete,
+    )
+
+
+def process_telemetry(session_id: str, telemetry: Dict[str, Any]) -> DecisionResponse:
+    """Apply a sim-bridge telemetry tick and fire any matching transition.
+
+    The session always rests on a pilot state; this looks at that state's
+    telemetry-gated ``auto_transitions`` and fires the first whose threshold is
+    met (honouring ``once`` and ``for_ms`` hysteresis). When nothing fires —
+    the common case for most ticks — it returns a no-op response with
+    ``telemetry_fired=False`` and the state unchanged.
+
+    Raises:
+      KeyError — session or state not found
+    """
+    trace: List[TransitionTrace] = []
+
+    session = get_session(session_id)
+    if session is None:
+        raise KeyError(f"Session '{session_id}' not found")
+
+    # Merge the tick into the session's last-known telemetry (sparse updates).
+    for key, value in telemetry.items():
+        if value is not None:
+            session.telemetry[key] = value
+
+    flow = get_flow(session.active_flow)
+    current_state = _get_state(flow, session.current_state)
+
+    # Telemetry only acts while the session is waiting on the pilot. (It always
+    # is between turns, but guard defensively.)
+    if current_state.role != "pilot":
+        save_session(session)
+        return _no_op_telemetry_response(session, trace)
+
+    now_ms = time.time() * 1000.0
+    fired: Optional[Transition] = None
+
+    for t in current_state.auto_transitions:
+        if t.telemetry is None:
+            continue
+        key = f"{current_state.id}::{t.to}"
+        if t.telemetry.once and key in session.fired_telemetry:
+            continue
+        # An optional plain guard can gate the telemetry edge (e.g. only when a
+        # flag is set), evaluated against variables/flags as usual.
+        if t.condition is not None and not evaluate_guard(t.condition, session.variables, session.flags):
+            session.telemetry_pending.pop(key, None)
+            continue
+        if not _eval_telemetry(t.telemetry, session.telemetry):
+            session.telemetry_pending.pop(key, None)
+            continue
+        # Hysteresis: the condition must hold continuously for `for_ms`.
+        if t.telemetry.for_ms > 0:
+            first = session.telemetry_pending.get(key)
+            if first is None:
+                session.telemetry_pending[key] = now_ms
+                continue
+            if now_ms - first < t.telemetry.for_ms:
+                continue
+        # Fire.
+        session.telemetry_pending.pop(key, None)
+        if t.telemetry.once:
+            session.fired_telemetry.append(key)
+        fired = t
+        trace.append(_trace(
+            "telemetry",
+            f"{t.telemetry.parameter} {t.telemetry.operator} {t.telemetry.value} "
+            f"→ '{t.to}' ({t.label or ''})",
+        ))
+        break
+
+    if fired is None:
+        save_session(session)
+        return _no_op_telemetry_response(session, trace)
+
+    logger.info(
+        "✓ TELEMETRY session=%.8s  %s → %s  (%s)",
+        session_id, current_state.id, fired.to, fired.label or fired.telemetry.parameter,
+    )
+    return _finalize_transition(
+        session, flow, current_state, fired, trace,
+        match_reason="telemetry", history_utterance="__TELEMETRY__",
     )
