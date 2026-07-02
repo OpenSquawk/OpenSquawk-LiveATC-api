@@ -150,3 +150,27 @@ def test_maybe_compute_skips_without_icao():
         )
         is None
     )
+
+
+# ── Chain resolution: which taxi flow a session will reach ───────────────────
+
+def _load_flow(slug):
+    from app.config import FLOWS_DIR
+    from app.flow_loader import get_flow, load_all_flows
+
+    load_all_flows(FLOWS_DIR)
+    return get_flow(slug)
+
+
+def test_taxi_flow_in_chain_finds_taxi_v1_from_clearance():
+    from app.routes.session_routes import _taxi_flow_in_chain
+
+    # clearance-v1 -> taxi-v1 -> tower-v1: the taxi flow is taxi-v1.
+    assert _taxi_flow_in_chain(_load_flow("clearance-v1")) == "taxi-v1"
+
+
+def test_taxi_flow_in_chain_none_for_non_taxi_chain():
+    from app.routes.session_routes import _taxi_flow_in_chain
+
+    # tower-v1 does not chain into a taxi flow.
+    assert _taxi_flow_in_chain(_load_flow("tower-v1")) is None

@@ -30,6 +30,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/radio", tags=["sessions"])
 
 
+def _taxi_flow_in_chain(flow) -> str | None:
+    """First taxi flow reachable from ``flow`` via next_flow links, or None.
+
+    A full departure enters at clearance-v1, which chains clearance -> taxi-v1
+    -> tower. The taxi clearance is issued in taxi-v1, so we look down the chain
+    to find which taxi flow to compute for.
+    """
+    seen = {flow.slug}
+    next_slug = flow.next_flow
+    for _ in range(6):  # chains are short; cap guards against a cycle
+        if not next_slug or next_slug in seen:
+            return None
+        if next_slug in TAXI_FLOW_SPECS:
+            return next_slug
+        seen.add(next_slug)
+        try:
+            next_slug = get_flow(next_slug).next_flow
+        except KeyError:
+            return None
+    return None
+
+
 def _compute_taxi_route_in_background(session_id: str, flow_slug: str, icao: str) -> None:
     """Resolve the OSM taxi route and write it onto the live session.
 
@@ -68,18 +90,32 @@ def create_radio_session(body: CreateSessionRequest, background: BackgroundTasks
     merged_overrides = {**resolution.variables, **(body.variables or {})}
 
     # Compute the real OSM taxi route and use it in place of the YAML default.
-    # Timing strategy:
-    #   - Entry flow IS a taxi flow (taxi-only training): the clearance comes
-    #     within seconds, so compute synchronously and let the frontend show a
-    #     "calculating taxi route" spinner over the create request.
-    #   - Taxi flow reached by chaining (full departure): compute in the
-    #     background; minutes of R/T happen first, so it's ready in time.
-    # A caller-supplied taxi_route always wins; failure keeps the YAML default.
-    autocompute = "taxi_route" not in (body.variables or {}) and bool(body.airport_icao)
+    # Which taxi flow to compute for: the entry flow itself (taxi-only drill) or
+    # one reached via the next_flow chain (full departure via clearance-v1). A
+    # no_chain session never reaches a chained flow, so only its own counts.
+    if flow.slug in TAXI_FLOW_SPECS:
+        taxi_flow_slug: str | None = flow.slug
+    elif body.no_chain:
+        taxi_flow_slug = None
+    else:
+        taxi_flow_slug = _taxi_flow_in_chain(flow)
+
+    # Skip only when the caller pinned taxi_route deliberately (kept out of the
+    # frontend payload so this can run). Timing:
+    #   - Entry flow IS the taxi flow: the clearance is seconds away, so compute
+    #     synchronously behind the frontend's "calculating taxi route" spinner.
+    #   - Taxi flow is down the chain: compute in the background; minutes of R/T
+    #     precede it, so the result is in place in time.
+    # Any failure keeps the flow's YAML default.
+    autocompute = (
+        "taxi_route" not in (body.variables or {})
+        and bool(body.airport_icao)
+        and taxi_flow_slug is not None
+    )
     compute_sync = autocompute and flow.slug in TAXI_FLOW_SPECS
     if compute_sync:
         computed = maybe_compute_taxi_route(
-            flow_slug=flow.slug,
+            flow_slug=taxi_flow_slug,
             icao=body.airport_icao,
             variables={**{k: v.initial for k, v in flow.variables.items()}, **merged_overrides},
         )
@@ -96,7 +132,7 @@ def create_radio_session(body: CreateSessionRequest, background: BackgroundTasks
 
     if autocompute and not compute_sync:
         background.add_task(
-            _compute_taxi_route_in_background, session.session_id, flow.slug, body.airport_icao
+            _compute_taxi_route_in_background, session.session_id, taxi_flow_slug, body.airport_icao
         )
 
     # Render the expected pilot phrase for the start state so the frontend
