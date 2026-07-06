@@ -52,7 +52,13 @@ def _taxi_flow_in_chain(flow) -> str | None:
     return None
 
 
-def _compute_taxi_route_in_background(session_id: str, flow_slug: str, icao: str) -> None:
+def _compute_taxi_route_in_background(
+    session_id: str,
+    flow_slug: str,
+    icao: str,
+    aircraft_lat: float | None = None,
+    aircraft_lon: float | None = None,
+) -> None:
     """Resolve the OSM taxi route and write it onto the live session.
 
     Runs after the create response is sent, so the live Overpass call never
@@ -63,7 +69,13 @@ def _compute_taxi_route_in_background(session_id: str, flow_slug: str, icao: str
     session = get_session(session_id)
     if session is None:
         return
-    computed = maybe_compute_taxi_route(flow_slug=flow_slug, icao=icao, variables=session.variables)
+    computed = maybe_compute_taxi_route(
+        flow_slug=flow_slug,
+        icao=icao,
+        variables=session.variables,
+        aircraft_lat=aircraft_lat,
+        aircraft_lon=aircraft_lon,
+    )
     if not computed:
         return
     # Re-fetch so we write onto the freshest session snapshot, then persist.
@@ -118,6 +130,8 @@ def create_radio_session(body: CreateSessionRequest, background: BackgroundTasks
             flow_slug=taxi_flow_slug,
             icao=body.airport_icao,
             variables={**{k: v.initial for k, v in flow.variables.items()}, **merged_overrides},
+            aircraft_lat=body.aircraft_lat,
+            aircraft_lon=body.aircraft_lon,
         )
         if computed:
             merged_overrides.update(computed)
@@ -132,7 +146,12 @@ def create_radio_session(body: CreateSessionRequest, background: BackgroundTasks
 
     if autocompute and not compute_sync:
         background.add_task(
-            _compute_taxi_route_in_background, session.session_id, taxi_flow_slug, body.airport_icao
+            _compute_taxi_route_in_background,
+            session.session_id,
+            taxi_flow_slug,
+            body.airport_icao,
+            body.aircraft_lat,
+            body.aircraft_lon,
         )
 
     # Render the expected pilot phrase for the start state so the frontend

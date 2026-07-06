@@ -195,6 +195,11 @@ class CreateSessionRequest(BaseModel):
     # Explicit `variables` still win over anything resolved here.
     airport_icao: Optional[str] = None
     destination_icao: Optional[str] = None
+    # Live aircraft position from the sim bridge, if connected. Used to start
+    # the departure taxi route at the real parking position (reverse-geocoded
+    # to the nearest stand for the spoken clearance).
+    aircraft_lat: Optional[float] = None
+    aircraft_lon: Optional[float] = None
 
 
 class ResolvedAirport(BaseModel):

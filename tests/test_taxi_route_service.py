@@ -174,3 +174,68 @@ def test_taxi_flow_in_chain_none_for_non_taxi_chain():
 
     # tower-v1 does not chain into a taxi flow.
     assert _taxi_flow_in_chain(_load_flow("tower-v1")) is None
+
+
+# ── Real-stand selection: random OSM stand / bridge reverse-geocode ──────────
+
+def test_unresolvable_stand_falls_back_to_random_real_stand():
+    # "Z99" is not an OSM stand; the fixture airport has exactly one stand (A12),
+    # so the "random" pick is deterministic. The spoken stand must be updated to
+    # match the routed one.
+    clearance = maybe_compute_taxi_route(
+        flow_slug="taxi-v1",
+        icao="EDDF",
+        variables={"stand": "Z99", "runway": "25L"},
+        client=FakeRouteClient(),
+    )
+    assert clearance is not None
+    assert clearance["stand"] == "A12"
+    assert clearance["taxi_route"] == "Lima 7, November"
+
+
+def test_bridge_position_routes_from_coordinates_and_names_nearest_stand():
+    # Aircraft parked at the A12 stand node -> route starts from raw coords,
+    # nearest stand within snap range names the spoken stand.
+    clearance = maybe_compute_taxi_route(
+        flow_slug="taxi-v1",
+        icao="EDDF",
+        variables={"stand": "Z99", "runway": "25L"},
+        aircraft_lat=50.0,
+        aircraft_lon=8.0,
+        client=FakeRouteClient(),
+    )
+    assert clearance is not None
+    assert clearance["stand"] == "A12"
+    assert clearance["taxi_route"] == "Lima 7, November"
+
+
+def test_null_island_bridge_position_is_ignored():
+    # 0/0 is the bridge's "no data" default — must not be used as an origin.
+    clearance = maybe_compute_taxi_route(
+        flow_slug="taxi-v1",
+        icao="EDDF",
+        variables={"stand": "A12", "runway": "25L"},
+        aircraft_lat=0.0,
+        aircraft_lon=0.0,
+        client=FakeRouteClient(),
+    )
+    assert clearance is not None
+    # Named-stand path used; no stand override needed since A12 resolves.
+    assert "stand" not in clearance
+    assert clearance["taxi_route"] == "Lima 7, November"
+
+
+def test_arrival_taxi_in_picks_random_real_stand_for_unresolvable_dest():
+    # taxi-in-v1: dest is the parking stand; YAML default "the apron" is not an
+    # OSM feature -> random real stand, and parking_stand is updated.
+    clearance = maybe_compute_taxi_route(
+        flow_slug="taxi-in-v1",
+        icao="EDDF",
+        variables={"runway": "25L", "parking_stand": "the apron"},
+        # Arrival: aircraft position must be ignored (it's not at the stand).
+        aircraft_lat=50.0,
+        aircraft_lon=8.0,
+        client=FakeRouteClient(),
+    )
+    assert clearance is not None
+    assert clearance["parking_stand"] == "A12"
