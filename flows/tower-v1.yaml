@@ -182,7 +182,7 @@ states:
     readback_mode: simple
 
     ok_next:
-      - to: ATC_AIRBORNE_HANDOFF
+      - to: PILOT_AWAIT_AIRBORNE
         trigger: ".*"
         label: "Takeoff readback evaluated — correct"
 
@@ -191,6 +191,58 @@ states:
         label: "Readback missing runway — controller corrects"
 
     auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 6b. Takeoff roll / initial climb — Tower waits until the aircraft is airborne
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Three ways out, so the state works with and without a sim bridge:
+  #   telemetry — wheels leave the ground (held 2 s to debounce bumps)
+  #   phrase    — pilot reports airborne/climbing
+  #   silence   — no bridge, no report: hand off after the timeout anyway
+  PILOT_AWAIT_AIRBORNE:
+    role: pilot
+    phase: tower
+    name: "Takeoff Roll — Awaiting Airborne"
+    description: "Aircraft is rolling / climbing out; Tower hands off to Departure once airborne"
+    expected_pilot_template: "Airborne, {{callsign}}"
+    frequency_name: "Tower"
+
+    auto_advance_on_silence: true
+    auto_advance_timeout_ms: 45000
+
+    ok_next:
+      - to: ATC_AIRBORNE_HANDOFF
+        trigger: "airborne|passing|climbing|with you|positive rate"
+        label: "Pilot reported airborne"
+
+    bad_next:
+      - to: ATC_AWAIT_AIRBORNE_ROGER
+        label: "Other call during the roll — Tower acknowledges and keeps waiting"
+
+    auto_transitions:
+      - to: ATC_AIRBORNE_HANDOFF
+        telemetry:
+          parameter: on_ground
+          operator: eq
+          value: false
+          for_ms: 2000
+        label: "Telemetry: wheels up — Tower hands off to Departure"
+      - to: ATC_AIRBORNE_HANDOFF
+        label: "Silence timeout — hand off without an airborne report"
+
+  ATC_AWAIT_AIRBORNE_ROGER:
+    role: atc
+    phase: tower
+    name: "Tower Acknowledges Call During Roll"
+    description: "Pilot transmitted something other than an airborne report; Tower acknowledges and keeps waiting"
+    say_template: "{{callsign}}, roger"
+    frequency_name: "Tower"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_AWAIT_AIRBORNE
+        label: "Acknowledged — still awaiting airborne"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # 7. ATC corrects incomplete takeoff readback

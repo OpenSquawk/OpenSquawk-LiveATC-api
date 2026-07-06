@@ -153,3 +153,87 @@ class TestTelemetryIsolation:
             process_timeout(telem_session.session_id)
         session = get_session(telem_session.session_id)
         assert session.current_state == "WAIT_AIRBORNE"
+
+
+# ---------------------------------------------------------------------------
+# Integration: the real tower-v1 airborne handoff (PoC flow)
+# ---------------------------------------------------------------------------
+
+FLOWS_DIR = __import__("pathlib").Path(__file__).parent.parent / "flows"
+
+
+class TestTowerAirborneHandoff:
+    """tower-v1: PILOT_AWAIT_AIRBORNE must exit via telemetry, phrase, or silence."""
+
+    @pytest.fixture(autouse=True)
+    def load_flows(self):
+        from app.flow_loader import load_all_flows
+        load_all_flows(FLOWS_DIR)
+        session_store._sessions.clear()
+
+    @pytest.fixture
+    def rolling_session(self):
+        """A tower-v1 session advanced to PILOT_AWAIT_AIRBORNE (takeoff roll)."""
+        from app.decision_engine import process_transmission
+        from app.flow_loader import get_flow
+        from app.models import DecisionRequest
+
+        flow = get_flow("tower")
+        session = create_session(flow, no_chain=True)
+        for utterance in (
+            "DLH39A holding short runway 25L ready for departure",
+            "line up and wait runway 25L DLH39A",
+            "cleared for takeoff runway 25L DLH39A",
+        ):
+            resp = process_transmission(session.session_id, DecisionRequest(pilot_utterance=utterance))
+        assert resp.next_state_id == "PILOT_AWAIT_AIRBORNE"
+        return session
+
+    def _age_pending(self, session_id: str, ms: float) -> None:
+        """Backdate the hysteresis arm time so for_ms elapses without sleeping."""
+        session = get_session(session_id)
+        for key in list(session.telemetry_pending):
+            session.telemetry_pending[key] -= ms
+        session_store.save_session(session)
+
+    def test_on_ground_tick_does_not_fire(self, rolling_session):
+        resp = process_telemetry(rolling_session.session_id, {"on_ground": True, "gs_kts": 120})
+        assert resp.telemetry_fired is False
+        assert resp.next_state_id == "PILOT_AWAIT_AIRBORNE"
+
+    def test_airborne_fires_after_hysteresis(self, rolling_session):
+        # First airborne tick arms the 2s debounce, does not fire.
+        r1 = process_telemetry(rolling_session.session_id, {"on_ground": False})
+        assert r1.telemetry_fired is False
+        # Backdate the arm time past for_ms; the next tick fires the handoff.
+        self._age_pending(rolling_session.session_id, 3000)
+        r2 = process_telemetry(rolling_session.session_id, {"on_ground": False})
+        assert r2.telemetry_fired is True
+        assert r2.next_state_id == "PILOT_HANDOFF_READBACK"
+        assert "contact departure" in (r2.controller_say_rendered or "").lower()
+
+    def test_pilot_phrase_fallback(self, rolling_session):
+        from app.decision_engine import process_transmission
+        from app.models import DecisionRequest
+        resp = process_transmission(
+            rolling_session.session_id,
+            DecisionRequest(pilot_utterance="DLH39A airborne"),
+        )
+        assert resp.next_state_id == "PILOT_HANDOFF_READBACK"
+        assert "contact departure" in (resp.controller_say_rendered or "").lower()
+
+    def test_silence_timeout_fallback(self, rolling_session):
+        resp = process_timeout(rolling_session.session_id)
+        assert resp.next_state_id == "PILOT_HANDOFF_READBACK"
+        assert "contact departure" in (resp.controller_say_rendered or "").lower()
+
+    def test_other_call_gets_roger_and_keeps_waiting(self, rolling_session):
+        from app.decision_engine import process_transmission
+        from app.models import DecisionRequest
+        resp = process_transmission(
+            rolling_session.session_id,
+            DecisionRequest(pilot_utterance="DLH39A rolling"),
+        )
+        # bad_next → roger → auto back to the wait state.
+        assert resp.next_state_id == "PILOT_AWAIT_AIRBORNE"
+        assert "roger" in (resp.controller_say_rendered or "").lower()

@@ -682,6 +682,7 @@ SKIP_TO_PILOT_CASES = [
     ("vfr-arrival", "PILOT_ENTER_CTR_READBACK", "REPORT_ENTRY_POINT"),
     ("vfr-circuit-landing", "PILOT_CIRCUIT_READBACK", "REPORT_DOWNWIND"),
     ("vfr-circuit-landing", "PILOT_LANDING_READBACK", "PILOT_RUNWAY_VACATED"),
+    ("tower", "PILOT_TAKEOFF_READBACK", "PILOT_AWAIT_AIRBORNE"),
 ]
 
 

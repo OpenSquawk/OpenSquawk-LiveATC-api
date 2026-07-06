@@ -1,7 +1,9 @@
 # Telemetry-driven ATC — design & rollout
 
-Status: **backbone implemented (additive, dormant), one decision + PoC pending**
-Last updated: 2026-07-01
+Status: **backbone merged to main; authority model CONFIRMED (backend-authoritative);
+airborne PoC live in tower-v1 (PILOT_AWAIT_AIRBORNE); frontend silence
+auto-advance wired (pm.vue timer → /timeout)**
+Last updated: 2026-07-06
 
 ## Goal
 
