@@ -24,6 +24,10 @@ def find_auto_transition(
     """Return the single valid auto-transition for this state, or None."""
     valid: List[Transition] = []
     for trans in state.auto_transitions:
+        # Telemetry-gated edges are driven exclusively by process_telemetry; the
+        # silent auto-advance walk must never take them.
+        if trans.telemetry is not None:
+            continue
         if trans.condition is not None:
             if evaluate_guard(trans.condition, variables, flags):
                 valid.append(trans)

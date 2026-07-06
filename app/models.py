@@ -30,11 +30,49 @@ class Action(BaseModel):
     value: Optional[Any] = None
 
 
+# Canonical, sim-agnostic telemetry parameter names. The frontend bridge layer
+# (MSFS SimConnect today, X-Plane datarefs later) normalises raw sim fields to
+# these before posting them; the backend only ever compares these scalars, so it
+# never needs sim-specific knowledge or geo math (distances are pre-computed by
+# the frontend, which has the live airport coordinates).
+TelemetryParameter = Literal[
+    "altitude_ft",          # feet MSL
+    "ias_kts",              # indicated airspeed, knots
+    "gs_kts",               # groundspeed, knots
+    "vs_fpm",               # vertical speed, feet/min (+climb, -descent)
+    "heading_deg",          # magnetic heading, 0..360
+    "on_ground",            # bool: wheels on the ground
+    "distance_to_dest_nm",  # great-circle nm to destination airport
+    "distance_to_dep_nm",   # great-circle nm from departure airport
+]
+
+
+class TelemetryCondition(BaseModel):
+    """A threshold on a live telemetry scalar that fires an auto-transition.
+
+    Evaluated ONLY by ``process_telemetry`` — never by silence-timeout or the
+    normal non-pilot auto-advance, so a flow that ships a telemetry transition
+    still behaves identically when no bridge is connected (no ticks arrive).
+    """
+    parameter: TelemetryParameter
+    operator: Literal["eq", "ne", "gt", "lt", "gte", "lte"]
+    value: Any
+    # The condition must hold continuously for this many ms before firing, to
+    # debounce values that hover around the threshold. 0 = fire on first tick.
+    for_ms: int = 0
+    # Fire at most once per session per transition (the common case — you only
+    # get handed to Departure once). Set False for repeatable cues.
+    once: bool = True
+
+
 class Transition(BaseModel):
     """A single edge in the flow graph."""
     to: str
     trigger: Optional[str] = None          # Regex pattern; None = auto transition
     condition: Optional[Guard] = None      # Guard must pass to use this transition
+    # Live-telemetry threshold. When set, this transition is driven by the sim
+    # bridge (process_telemetry) and is invisible to regex/silence routing.
+    telemetry: Optional[TelemetryCondition] = None
     is_emergency: bool = False             # MAYDAY / PAN-PAN — checked first
     label: Optional[str] = None
     on_enter_actions: List[Action] = Field(default_factory=list)
@@ -172,6 +210,16 @@ class RuntimeSession(BaseModel):
 
     active_timers: List[Dict] = Field(default_factory=list)
 
+    # Latest normalised telemetry scalars from the sim bridge (empty when flying
+    # without a bridge). Keys are TelemetryParameter values.
+    telemetry: Dict[str, Any] = Field(default_factory=dict)
+    # Transition keys ("<state_id>::<to>") whose `once` telemetry trigger already
+    # fired, so it never fires twice in a session.
+    fired_telemetry: List[str] = Field(default_factory=list)
+    # Hysteresis bookkeeping: transition key -> epoch-ms when its telemetry
+    # condition first became true (cleared when it goes false again).
+    telemetry_pending: Dict[str, float] = Field(default_factory=dict)
+
     # When True, handle_flow_completion will not follow next_flow links.
     no_chain: bool = False
 
@@ -229,6 +277,15 @@ class DecisionRequest(BaseModel):
     audio_metadata: Optional[Dict] = None
 
 
+class TelemetryRequest(BaseModel):
+    """A single normalised telemetry tick from the sim bridge.
+
+    Only keys present are updated; the session keeps the last known value for the
+    rest. Values are the sim-agnostic scalars named by ``TelemetryParameter``.
+    """
+    telemetry: Dict[str, Any]
+
+
 class TransitionTrace(BaseModel):
     type: str
     message: str
@@ -266,6 +323,11 @@ class DecisionResponse(BaseModel):
     fallback_reason: Optional[str]
 
     auto_advanced_states: List[str] = Field(default_factory=list)
+
+    # True when this response was produced by a telemetry tick that actually
+    # fired a transition (vs. an idle tick that changed nothing). Lets the
+    # frontend ignore no-op telemetry polls without inspecting state diffs.
+    telemetry_fired: bool = False
 
     # True when the session has reached a terminal end state (no further chaining
     # will happen).  The frontend uses this to show the completion screen.
