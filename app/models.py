@@ -56,7 +56,14 @@ class TelemetryCondition(BaseModel):
     """
     parameter: TelemetryParameter
     operator: Literal["eq", "ne", "gt", "lt", "gte", "lte"]
+    # Static value, or a "{{variable}}" template resolved against the session's
+    # variables at evaluation time. Resolved altitude strings understand flight
+    # levels: "FL150" → 15000 ft. An unresolvable value never fires.
     value: Any
+    # Added to the (resolved) numeric value before comparing, so flows can say
+    # "1000 ft before the cleared level" (value: "{{climb_altitude}}",
+    # offset: -1000) or "300 ft above it" (offset: 300). Ignored for booleans.
+    offset: float = 0
     # The condition must hold continuously for this many ms before firing, to
     # debounce values that hover around the threshold. 0 = fire on first tick.
     for_ms: int = 0
@@ -281,7 +288,10 @@ class TelemetryRequest(BaseModel):
     """A single normalised telemetry tick from the sim bridge.
 
     Only keys present are updated; the session keeps the last known value for the
-    rest. Values are the sim-agnostic scalars named by ``TelemetryParameter``.
+    rest. Values are the sim-agnostic scalars named by ``TelemetryParameter``,
+    plus optional ``lat``/``lon`` (degrees) from which the engine derives
+    ``distance_to_dep_nm`` / ``distance_to_dest_nm`` when the session's airport
+    ICAO codes have known coordinates.
     """
     telemetry: Dict[str, Any]
 

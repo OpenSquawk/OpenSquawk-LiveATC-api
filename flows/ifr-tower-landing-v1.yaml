@@ -156,7 +156,18 @@ states:
       - to: ATC_RUNWAY_VACATED_INCORRECT
         label: "Incomplete vacated call — controller prompts"
 
-    auto_transitions: []
+    auto_transitions:
+      # Tower can see the aircraft slow to taxi speed after the rollout — the
+      # handoff comes even when the pilot forgets to report vacated. Taxi speed
+      # is unreachable before touchdown (final approach is 120+ kt over the
+      # ground), so gs < 30 kt held 8 s can only mean landed and slowed.
+      - to: ATC_VACATED_HANDOFF
+        telemetry:
+          parameter: gs_kts
+          operator: lt
+          value: 30
+          for_ms: 8000
+        label: "Telemetry: slowed to taxi speed — Tower initiates the handoff"
 
   ATC_RUNWAY_VACATED_INCORRECT:
     role: atc

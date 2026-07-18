@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.action_executor import execute_actions
+from app.airport_data import airport_coords
 from app.auto_advance import advance_through_non_pilot
 from app.flow_loader import get_flow
 from app.flow_orchestrator import handle_flow_completion, push_flow
@@ -941,18 +942,55 @@ def _coerce_like(left: Any, right: Any) -> Tuple[Any, Any]:
         return left, right
 
 
-def _eval_telemetry(cond: TelemetryCondition, telemetry: Dict[str, Any]) -> bool:
+def _parse_level(value: Any) -> Optional[float]:
+    """Numeric feet value of an altitude-ish string: "FL150" → 15000, "5000" → 5000."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        s = value.strip().upper().replace(" ", "").replace(",", "")
+        if s.startswith("FL"):
+            s = s[2:]
+            try:
+                return float(s) * 100.0
+            except ValueError:
+                return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+    return None
+
+
+def _eval_telemetry(
+    cond: TelemetryCondition,
+    telemetry: Dict[str, Any],
+    variables: Optional[Dict[str, Any]] = None,
+) -> bool:
     """True when the telemetry scalar satisfies the condition.
 
     Missing telemetry (the bridge never reported this parameter) is always False
-    — a flow can never advance on telemetry it does not have.
+    — a flow can never advance on telemetry it does not have. String values are
+    rendered against the session variables ("{{climb_altitude}}") and parsed as
+    levels ("FL150" → 15000); an unresolvable template never fires.
     """
     if cond.parameter not in telemetry:
         return False
     raw = telemetry[cond.parameter]
     if raw is None:
         return False
-    left, right = _coerce_like(raw, cond.value)
+    value = cond.value
+    if isinstance(value, str):
+        rendered = render_template(value, variables or {}) if "{{" in value else value
+        parsed = _parse_level(rendered)
+        if parsed is not None:
+            value = parsed
+        elif "{{" in value:
+            return False  # template did not resolve to a number — never fire
+    left, right = _coerce_like(raw, value)
+    if cond.offset and isinstance(right, float):
+        right += cond.offset
     op = _TELEMETRY_OPS.get(cond.operator)
     if op is None:
         return False
@@ -960,6 +998,42 @@ def _eval_telemetry(cond: TelemetryCondition, telemetry: Dict[str, Any]) -> bool
         return bool(op(left, right))
     except TypeError:
         return False
+
+
+_EARTH_RADIUS_NM = 3440.065
+
+
+def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    from math import asin, cos, radians, sin, sqrt
+    phi1, phi2 = radians(lat1), radians(lat2)
+    dphi = radians(lat2 - lat1)
+    dlam = radians(lon2 - lon1)
+    a = sin(dphi / 2) ** 2 + cos(phi1) * cos(phi2) * sin(dlam / 2) ** 2
+    return 2 * _EARTH_RADIUS_NM * asin(sqrt(a))
+
+
+def _update_derived_distances(session: RuntimeSession) -> None:
+    """Derive distance_to_dep_nm / distance_to_dest_nm from the live position.
+
+    The bridge sends raw ``lat``/``lon`` degrees; the airport coordinates come
+    from the bundled dataset via the session's ICAO codes. No coordinates or no
+    position → the distance parameters simply stay absent (conditions on them
+    never fire).
+    """
+    lat, lon = session.telemetry.get("lat"), session.telemetry.get("lon")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return
+    if isinstance(lat, bool) or isinstance(lon, bool):
+        return
+    # 0/0 is the "no GPS data yet" default some bridges report.
+    if abs(lat) < 0.1 and abs(lon) < 0.1:
+        return
+    dep = airport_coords(session.airport_icao)
+    if dep:
+        session.telemetry["distance_to_dep_nm"] = round(_haversine_nm(lat, lon, dep[0], dep[1]), 2)
+    dest = airport_coords(session.destination_icao)
+    if dest:
+        session.telemetry["distance_to_dest_nm"] = round(_haversine_nm(lat, lon, dest[0], dest[1]), 2)
 
 
 def _no_op_telemetry_response(session: RuntimeSession, trace: List[TransitionTrace]) -> DecisionResponse:
@@ -1133,6 +1207,7 @@ def process_telemetry(session_id: str, telemetry: Dict[str, Any]) -> DecisionRes
     for key, value in telemetry.items():
         if value is not None:
             session.telemetry[key] = value
+    _update_derived_distances(session)
 
     flow = get_flow(session.active_flow)
     current_state = _get_state(flow, session.current_state)
@@ -1146,10 +1221,13 @@ def process_telemetry(session_id: str, telemetry: Dict[str, Any]) -> DecisionRes
     now_ms = time.time() * 1000.0
     fired: Optional[Transition] = None
 
-    for t in current_state.auto_transitions:
+    for idx, t in enumerate(current_state.auto_transitions):
         if t.telemetry is None:
             continue
-        key = f"{current_state.id}::{t.to}"
+        # The index keeps two telemetry edges to the same target (e.g. altitude
+        # OR distance both leading to the handoff) on separate once/hysteresis
+        # bookkeeping.
+        key = f"{current_state.id}::{idx}::{t.to}"
         if t.telemetry.once and key in session.fired_telemetry:
             continue
         # An optional plain guard can gate the telemetry edge (e.g. only when a
@@ -1157,7 +1235,7 @@ def process_telemetry(session_id: str, telemetry: Dict[str, Any]) -> DecisionRes
         if t.condition is not None and not evaluate_guard(t.condition, session.variables, session.flags):
             session.telemetry_pending.pop(key, None)
             continue
-        if not _eval_telemetry(t.telemetry, session.telemetry):
+        if not _eval_telemetry(t.telemetry, session.telemetry, session.variables):
             session.telemetry_pending.pop(key, None)
             continue
         # Hysteresis: the condition must hold continuously for `for_ms`.

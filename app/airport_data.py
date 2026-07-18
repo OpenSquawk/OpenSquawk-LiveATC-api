@@ -29,7 +29,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,8 @@ def _load() -> None:
                         "city": row.get("municipality", "").strip(),
                         "country": row.get("country", "").strip(),
                         "name": row.get("name", "").strip(),
+                        "lat": row.get("lat", "").strip(),
+                        "lon": row.get("lon", "").strip(),
                     }
     else:
         logger.warning("Airport dataset missing at %s — names/frequencies unavailable", _AIRPORTS_CSV)
@@ -208,6 +210,25 @@ def resolve_airport(icao: str, positions: Optional[List[str]] = None) -> Optiona
             info.frequencies[pos] = invent_frequency(code, pos)
             info.invented[pos] = True
     return info
+
+
+def airport_coords(icao: Optional[str]) -> Optional[Tuple[float, float]]:
+    """(lat, lon) of an airport's reference point, or None if unknown.
+
+    Used to derive distance_to_dep_nm / distance_to_dest_nm from live
+    telemetry positions.
+    """
+    if not icao:
+        return None
+    _load()
+    assert _airports is not None
+    rec = _airports.get(icao.strip().upper())
+    if rec is None or not rec.get("lat") or not rec.get("lon"):
+        return None
+    try:
+        return float(rec["lat"]), float(rec["lon"])
+    except ValueError:
+        return None
 
 
 def is_icao_airport(value: str) -> bool:

@@ -1,7 +1,7 @@
 slug: departure-v1
 schema_version: "2.0"
 name: "Departure — Initial Climb"
-description: "Pilot checks in with departure control after takeoff, receives radar contact and climb clearance, reads it back correctly"
+description: "Pilot checks in with departure control after takeoff, receives radar contact and climb clearance, reads it back, climbs to the cleared level and is handed off to Center"
 
 start_state: INITIAL_CONTACT
 end_states:
@@ -29,6 +29,12 @@ variables:
   waypoint:
     type: string
     initial: "BIBAX"
+    mutable_by: action_only
+  # Center/Radar frequency for the handoff once the aircraft approaches the
+  # cleared climb level (the frontend supplies the real value).
+  handoff_freq:
+    type: string
+    initial: "131.150"
     mutable_by: action_only
 
 flags:
@@ -160,21 +166,165 @@ states:
     ok_next: []
     bad_next: []
     auto_transitions:
-      - to: DEPARTURE_COMPLETE
-        label: "Departure phase complete"
+      - to: PILOT_AWAIT_CLIMB
+        label: "Readback confirmed — climbing to cleared level"
         on_enter_actions:
           - type: set_flag
             target: readback_correct
             value: true
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # 6. End state
+  # 6. Climb — Departure waits until the aircraft approaches the cleared level
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Exits (works with and without a sim bridge):
+  #   telemetry — within 1000 ft of the cleared level (held 3 s)
+  #   telemetry — level bust callout (300 ft above, held 8 s, once) then back here
+  #   phrase    — pilot reports reaching/approaching the level
+  #   silence   — no bridge, no report: hand off after the timeout anyway
+  PILOT_AWAIT_CLIMB:
+    role: pilot
+    phase: departure
+    name: "Climbing — Awaiting Level"
+    description: "Aircraft is climbing to the cleared level; Departure hands off to Center when it gets there"
+    expected_pilot_template: "Reaching {{climb_altitude}}, {{callsign}}"
+    frequency_name: "Departure"
+
+    auto_advance_on_silence: true
+    auto_advance_timeout_ms: 60000
+
+    ok_next:
+      - to: ATC_CENTER_HANDOFF
+        trigger: "reaching|approaching|level|passing"
+        label: "Pilot reported reaching the cleared level"
+
+    bad_next:
+      - to: ATC_AWAIT_CLIMB_ROGER
+        label: "Other call during the climb — Departure acknowledges and keeps waiting"
+
+    auto_transitions:
+      - to: ATC_CENTER_HANDOFF
+        telemetry:
+          parameter: altitude_ft
+          operator: gte
+          value: "{{climb_altitude}}"
+          offset: -1000
+          for_ms: 3000
+        label: "Telemetry: approaching cleared level — hand off to Center"
+      - to: ATC_LEVEL_BUST
+        telemetry:
+          parameter: altitude_ft
+          operator: gt
+          value: "{{climb_altitude}}"
+          offset: 300
+          for_ms: 8000
+        label: "Telemetry: climbed above the cleared level — check altitude"
+      - to: ATC_CENTER_HANDOFF
+        label: "Silence timeout — hand off without a level report"
+
+  ATC_AWAIT_CLIMB_ROGER:
+    role: atc
+    phase: departure
+    name: "Departure Acknowledges Call During Climb"
+    description: "Pilot transmitted something other than a level report; Departure acknowledges and keeps waiting"
+    say_template: "{{callsign}}, roger"
+    frequency_name: "Departure"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_AWAIT_CLIMB
+        label: "Acknowledged — still awaiting the level"
+
+  ATC_LEVEL_BUST:
+    role: atc
+    phase: departure
+    name: "Departure Calls Out Level Bust"
+    description: "The aircraft climbed above its cleared level — controller tells the pilot to check altitude"
+    say_template: "{{callsign}}, check altitude, cleared level is {{climb_altitude}}"
+    frequency_name: "Departure"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_AWAIT_CLIMB
+        label: "Altitude called out — back to awaiting the level"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 7. Departure hands the pilot off to Center at the cleared level
+  # ─────────────────────────────────────────────────────────────────────────────
+  ATC_CENTER_HANDOFF:
+    role: atc
+    phase: departure
+    name: "Departure Hands Off to Center"
+    description: "Approaching the cleared level, the pilot is instructed to contact the radar/center frequency"
+    say_template: "{{callsign}}, contact center {{handoff_freq}}"
+    frequency_name: "Departure"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_CENTER_FREQ_READBACK
+        label: "Center handoff given — await pilot readback"
+
+  PILOT_CENTER_FREQ_READBACK:
+    role: pilot
+    phase: departure
+    name: "Pilot Reads Back Center Frequency"
+    description: "Pilot reads back the center frequency and own callsign to confirm the frequency change"
+    expected_pilot_template: "{{handoff_freq}}, {{callsign}}"
+    frequency_name: "Departure"
+
+    readback_required:
+      - handoff_freq
+    readback_mode: simple
+
+    ok_next:
+      - to: ATC_CENTER_HANDOFF_CONFIRMED
+        trigger: ".*"
+        label: "Center frequency readback evaluated — correct"
+
+    bad_next:
+      - to: ATC_CENTER_FREQ_READBACK_INCORRECT
+        label: "Readback missing center frequency — controller corrects"
+
+    auto_transitions: []
+
+  ATC_CENTER_FREQ_READBACK_INCORRECT:
+    role: atc
+    phase: departure
+    name: "ATC Corrects Center Frequency Readback"
+    description: "Controller repeats the center frequency for the pilot"
+    say_template: "Negative, {{callsign}}, center on {{handoff_freq}}"
+    frequency_name: "Departure"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_CENTER_FREQ_READBACK
+        label: "Correction given — pilot to try again"
+
+  ATC_CENTER_HANDOFF_CONFIRMED:
+    role: atc
+    phase: departure
+    name: "Departure Confirms Center Handoff"
+    description: "Departure acknowledges the correct frequency readback"
+    say_template: "Readback correct, {{callsign}}, good day"
+    frequency_name: "Departure"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: DEPARTURE_COMPLETE
+        label: "Departure phase complete — pilot switching to center"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 8. End state
   # ─────────────────────────────────────────────────────────────────────────────
   DEPARTURE_COMPLETE:
     role: system
     phase: departure
     name: "Departure Phase Complete"
-    description: "Initial climb clearance received and read back correctly. Continue climb to {{climb_altitude}}."
+    description: "Climb complete and handed off. Switch to center on {{handoff_freq}}."
 
     ok_next: []
     bad_next: []

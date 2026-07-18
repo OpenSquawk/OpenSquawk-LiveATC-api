@@ -128,7 +128,7 @@ states:
     readback_mode: simple
 
     ok_next:
-      - to: ATC_DESCENT_2
+      - to: PILOT_AWAIT_DESCENT_1
         trigger: ".*"
         label: "First descent readback evaluated — correct"
 
@@ -137,6 +137,57 @@ states:
         label: "Readback missing flight level — controller corrects"
 
     auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 2b. First descent — Center waits until the aircraft nears the cleared level
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Exits: telemetry (within 2000 ft of the level, held 3 s), a pilot report,
+  # or the silence fallback — so no-bridge sessions keep flowing.
+  PILOT_AWAIT_DESCENT_1:
+    role: pilot
+    phase: enroute
+    name: "Descending — Awaiting First Level"
+    description: "Aircraft is descending to the first cleared level; Center continues the descent as it gets there"
+    expected_pilot_template: "Passing {{descent_level_1}}, {{callsign}}"
+    frequency_name: "Center"
+
+    auto_advance_on_silence: true
+    auto_advance_timeout_ms: 60000
+
+    ok_next:
+      - to: ATC_DESCENT_2
+        trigger: "reaching|approaching|level|passing|descending"
+        label: "Pilot reported reaching the level"
+
+    bad_next:
+      - to: ATC_AWAIT_DESCENT_1_ROGER
+        label: "Other call during the descent — Center acknowledges and keeps waiting"
+
+    auto_transitions:
+      - to: ATC_DESCENT_2
+        telemetry:
+          parameter: altitude_ft
+          operator: lte
+          value: "{{descent_level_1}}"
+          offset: 2000
+          for_ms: 3000
+        label: "Telemetry: approaching the first level — continue descent"
+      - to: ATC_DESCENT_2
+        label: "Silence timeout — continue descent without a report"
+
+  ATC_AWAIT_DESCENT_1_ROGER:
+    role: atc
+    phase: enroute
+    name: "Center Acknowledges Call During Descent"
+    description: "Pilot transmitted something other than a level report; Center acknowledges and keeps waiting"
+    say_template: "{{callsign}}, roger"
+    frequency_name: "Center"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_AWAIT_DESCENT_1
+        label: "Acknowledged — still awaiting the level"
 
   ATC_DESCENT_1_INCORRECT:
     role: atc
@@ -182,7 +233,7 @@ states:
     readback_mode: simple
 
     ok_next:
-      - to: ATC_APPROACH_HANDOFF
+      - to: PILOT_AWAIT_HANDOFF
         trigger: ".*"
         label: "Second descent readback evaluated — correct"
 
@@ -191,6 +242,64 @@ states:
         label: "Readback missing flight level — controller corrects"
 
     auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 3b. Toward the terminal area — handoff by distance or level
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Exits: telemetry (within 40 nm of the destination, or within 1000 ft of the
+  # final enroute level), a pilot report, or the silence fallback.
+  PILOT_AWAIT_HANDOFF:
+    role: pilot
+    phase: enroute
+    name: "Descending — Awaiting Approach Handoff"
+    description: "Aircraft is descending toward the terminal area; Center hands off to Approach as it closes in"
+    expected_pilot_template: "Passing {{descent_level_2}}, {{callsign}}"
+    frequency_name: "Center"
+
+    auto_advance_on_silence: true
+    auto_advance_timeout_ms: 60000
+
+    ok_next:
+      - to: ATC_APPROACH_HANDOFF
+        trigger: "reaching|approaching|level|passing|descending"
+        label: "Pilot reported progress — hand off to Approach"
+
+    bad_next:
+      - to: ATC_AWAIT_HANDOFF_ROGER
+        label: "Other call during the descent — Center acknowledges and keeps waiting"
+
+    auto_transitions:
+      - to: ATC_APPROACH_HANDOFF
+        telemetry:
+          parameter: distance_to_dest_nm
+          operator: lte
+          value: 40
+          for_ms: 3000
+        label: "Telemetry: closing on the terminal area — hand off to Approach"
+      - to: ATC_APPROACH_HANDOFF
+        telemetry:
+          parameter: altitude_ft
+          operator: lte
+          value: "{{descent_level_2}}"
+          offset: 1000
+          for_ms: 3000
+        label: "Telemetry: approaching the final enroute level — hand off to Approach"
+      - to: ATC_APPROACH_HANDOFF
+        label: "Silence timeout — hand off without a report"
+
+  ATC_AWAIT_HANDOFF_ROGER:
+    role: atc
+    phase: enroute
+    name: "Center Acknowledges Call Before Handoff"
+    description: "Pilot transmitted something other than a progress report; Center acknowledges and keeps waiting"
+    say_template: "{{callsign}}, roger"
+    frequency_name: "Center"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_AWAIT_HANDOFF
+        label: "Acknowledged — still awaiting the handoff point"
 
   ATC_DESCENT_2_INCORRECT:
     role: atc

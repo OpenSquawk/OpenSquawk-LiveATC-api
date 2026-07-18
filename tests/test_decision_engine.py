@@ -426,8 +426,13 @@ class TestIfrEnrouteChain:
         r = self._tx(sid, "London Control, DLH6RK, FL360")
         assert r.next_state_id == "PILOT_DESCENT_1_READBACK"
         r = self._tx(sid, "Descend flight level 240, DLH6RK")
+        assert r.next_state_id == "PILOT_AWAIT_DESCENT_1"
+        # Progress report exits the wait state (telemetry would too).
+        r = self._tx(sid, "DLH6RK, passing flight level 250")
         assert r.next_state_id == "PILOT_DESCENT_2_READBACK"
         r = self._tx(sid, "Descend flight level 100, expect ILS runway 26L, DLH6RK")
+        assert r.next_state_id == "PILOT_AWAIT_HANDOFF"
+        r = self._tx(sid, "DLH6RK, passing flight level 150")
         assert r.next_state_id == "PILOT_APPROACH_FREQ_READBACK"
         # Approach frequency readback completes en-route and chains to the approach flow.
         r = self._tx(sid, "119.900, DLH6RK")
@@ -447,13 +452,17 @@ class TestIfrArrivalChain:
     def _tx(self, sid, text):
         return process_transmission(sid, DecisionRequest(pilot_utterance=text))
 
-    # Full-fidelity approach readbacks in sequence.
+    # Full-fidelity approach readbacks in sequence, with the progress reports
+    # that exit the telemetry wait states when no bridge is connected.
     _APPROACH_READBACKS = (
         ("Munich Approach, DLH6RK, descending FL100, information K", "PILOT_STAR_READBACK"),
         ("Cleared Rokil one alpha arrival, descend via STAR to FL80, expect ILS runway 26L, DLH6RK", "PILOT_DESCENT_READBACK"),
-        ("Descend altitude 5000 feet, QNH 1013, transition level 70, speed 220 knots, DLH6RK", "PILOT_VECTOR_READBACK"),
-        ("Heading 320, descend 4000 feet, speed 180 knots, DLH6RK", "PILOT_ILS_READBACK"),
-        ("Heading 290, cleared ILS approach runway 26L, speed 160 knots until 4 DME, DLH6RK", "PILOT_TOWER_FREQ_READBACK"),
+        ("Descend altitude 5000 feet, QNH 1013, transition level 70, speed 220 knots, DLH6RK", "PILOT_AWAIT_DESCENT"),
+        ("DLH6RK, reaching 5000 feet", "PILOT_VECTOR_READBACK"),
+        ("Heading 320, descend 4000 feet, speed 180 knots, DLH6RK", "PILOT_AWAIT_INTERCEPT"),
+        ("DLH6RK, reaching 4000 feet", "PILOT_ILS_READBACK"),
+        ("Heading 290, cleared ILS approach runway 26L, speed 160 knots until 4 DME, DLH6RK", "PILOT_AWAIT_ESTABLISHED"),
+        ("DLH6RK, established ILS runway 26L", "PILOT_TOWER_FREQ_READBACK"),
     )
 
     def test_full_ifr_arrival_walkthrough(self, ifr_session):

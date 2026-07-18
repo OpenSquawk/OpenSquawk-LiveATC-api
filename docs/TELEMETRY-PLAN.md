@@ -2,8 +2,14 @@
 
 Status: **backbone merged to main; authority model CONFIRMED (backend-authoritative);
 airborne PoC live in tower-v1 (PILOT_AWAIT_AIRBORNE); frontend silence
-auto-advance wired (pm.vue timer → /timeout)**
-Last updated: 2026-07-06
+auto-advance wired (pm.vue timer → /timeout).
+Rollout shipped 2026-07-18 (see `2026-07-18-telemetry-triggers-design.md`):
+variable-resolved condition values + offsets, backend-derived
+distance_to_dep/dest_nm from lat/lon ticks (airports.min.csv now carries
+coordinates), departure climb handoff + level-bust callout, arrival descent /
+intercept / established gates with speed checks, vacated-by-groundspeed,
+worker-based bridge polling in /live-atc (background-tab safe).**
+Last updated: 2026-07-18
 
 ## Goal
 

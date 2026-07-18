@@ -132,13 +132,15 @@ class TestHysteresis:
         session_store._sessions.clear()
         session = create_session(flow, variable_overrides={"callsign": "DLH39A"})
         try:
-            # First true tick only arms the timer.
+            # First true tick only arms the timer (keys are state::<edge index>::target).
             r1 = process_telemetry(session.session_id, {"on_ground": False})
             assert r1.telemetry_fired is False
+            s = get_session(session.session_id)
+            assert "WAIT_AIRBORNE::0::ATC_CONTACT_DEPARTURE" in s.telemetry_pending
             # A false tick disarms it.
             process_telemetry(session.session_id, {"on_ground": True})
             s = get_session(session.session_id)
-            assert f"WAIT_AIRBORNE::ATC_CONTACT_DEPARTURE" not in s.telemetry_pending
+            assert "WAIT_AIRBORNE::0::ATC_CONTACT_DEPARTURE" not in s.telemetry_pending
         finally:
             flow_loader._flow_cache.pop(flow.slug, None)
 
@@ -237,3 +239,206 @@ class TestTowerAirborneHandoff:
         # bad_next → roger → auto back to the wait state.
         assert resp.next_state_id == "PILOT_AWAIT_AIRBORNE"
         assert "roger" in (resp.controller_say_rendered or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Variable-resolved condition values ("{{climb_altitude}}", FL parsing, offset)
+# ---------------------------------------------------------------------------
+
+class TestValueResolution:
+    def test_parse_level(self):
+        from app.decision_engine import _parse_level
+        assert _parse_level("FL150") == 15000
+        assert _parse_level("fl 80") == 8000
+        assert _parse_level("5000") == 5000
+        assert _parse_level(5000) == 5000.0
+        assert _parse_level("5,000") == 5000
+        assert _parse_level("garbage") is None
+        assert _parse_level(True) is None
+
+    def test_template_value_resolves_against_variables(self):
+        cond = TelemetryCondition(parameter="altitude_ft", operator="gte", value="{{climb_altitude}}")
+        variables = {"climb_altitude": "FL150"}
+        assert _eval_telemetry(cond, {"altitude_ft": 15200}, variables) is True
+        assert _eval_telemetry(cond, {"altitude_ft": 14000}, variables) is False
+
+    def test_offset_shifts_the_threshold(self):
+        cond = TelemetryCondition(
+            parameter="altitude_ft", operator="gte", value="{{climb_altitude}}", offset=-1000,
+        )
+        variables = {"climb_altitude": "5000"}
+        assert _eval_telemetry(cond, {"altitude_ft": 4200}, variables) is True
+        assert _eval_telemetry(cond, {"altitude_ft": 3900}, variables) is False
+
+    def test_unresolvable_template_never_fires(self):
+        cond = TelemetryCondition(parameter="altitude_ft", operator="gte", value="{{nope}}")
+        assert _eval_telemetry(cond, {"altitude_ft": 99999}, {}) is False
+
+    def test_static_string_level_parses(self):
+        cond = TelemetryCondition(parameter="altitude_ft", operator="lte", value="FL80", offset=1500)
+        assert _eval_telemetry(cond, {"altitude_ft": 9400}, {}) is True
+        assert _eval_telemetry(cond, {"altitude_ft": 9600}, {}) is False
+
+
+# ---------------------------------------------------------------------------
+# Distance derivation from lat/lon ticks
+# ---------------------------------------------------------------------------
+
+class TestDerivedDistances:
+    def test_distances_derived_from_position(self, telem_session):
+        session = get_session(telem_session.session_id)
+        session.airport_icao = "EDDM"
+        session.destination_icao = "EDDF"
+        session_store.save_session(session)
+        # Exactly one degree of latitude north of EDDF (50.02671, 8.55835) = 60 nm.
+        process_telemetry(telem_session.session_id, {"lat": 51.02671, "lon": 8.55835})
+        session = get_session(telem_session.session_id)
+        assert session.telemetry["distance_to_dest_nm"] == pytest.approx(60.0, abs=0.5)
+        assert session.telemetry["distance_to_dep_nm"] > 100  # far from Munich
+
+    def test_null_island_position_ignored(self, telem_session):
+        session = get_session(telem_session.session_id)
+        session.destination_icao = "EDDF"
+        session_store.save_session(session)
+        process_telemetry(telem_session.session_id, {"lat": 0.0, "lon": 0.0})
+        session = get_session(telem_session.session_id)
+        assert "distance_to_dest_nm" not in session.telemetry
+
+    def test_unknown_airport_keeps_distances_absent(self, telem_session):
+        session = get_session(telem_session.session_id)
+        session.airport_icao = "QQQQ"  # not in the dataset (XXXX actually is!)
+        session.destination_icao = None
+        session_store.save_session(session)
+        process_telemetry(telem_session.session_id, {"lat": 50.0, "lon": 8.0})
+        session = get_session(telem_session.session_id)
+        assert "distance_to_dep_nm" not in session.telemetry
+        assert "distance_to_dest_nm" not in session.telemetry
+
+
+# ---------------------------------------------------------------------------
+# Integration: departure-v1 climb — approach the level, bust callout, handoff
+# ---------------------------------------------------------------------------
+
+class TestDepartureClimbHandoff:
+    @pytest.fixture(autouse=True)
+    def load_flows(self):
+        from app.flow_loader import load_all_flows
+        load_all_flows(FLOWS_DIR)
+        session_store._sessions.clear()
+
+    @pytest.fixture
+    def climbing_session(self):
+        """A departure-v1 session advanced to PILOT_AWAIT_CLIMB."""
+        from app.decision_engine import process_transmission
+        from app.flow_loader import get_flow
+        from app.models import DecisionRequest
+
+        session = create_session(get_flow("departure-v1"), no_chain=True)
+        for utterance in (
+            "DLH39A, passing 1500, climbing 5000",
+            "Climb FL150, direct BIBAX, DLH39A",
+        ):
+            resp = process_transmission(session.session_id, DecisionRequest(pilot_utterance=utterance))
+        assert resp.next_state_id == "PILOT_AWAIT_CLIMB"
+        return session
+
+    def _age_pending(self, session_id: str, ms: float) -> None:
+        session = get_session(session_id)
+        for key in list(session.telemetry_pending):
+            session.telemetry_pending[key] -= ms
+        session_store.save_session(session)
+
+    def test_approaching_cleared_level_hands_off_to_center(self, climbing_session):
+        # climb_altitude FL150 → threshold 14000 ft (offset -1000), held 3 s.
+        r1 = process_telemetry(climbing_session.session_id, {"altitude_ft": 14200})
+        assert r1.telemetry_fired is False  # arming
+        self._age_pending(climbing_session.session_id, 4000)
+        r2 = process_telemetry(climbing_session.session_id, {"altitude_ft": 14300})
+        assert r2.telemetry_fired is True
+        assert r2.next_state_id == "PILOT_CENTER_FREQ_READBACK"
+        assert "contact center" in (r2.controller_say_rendered or "").lower()
+
+    def test_low_altitude_does_not_fire(self, climbing_session):
+        r = process_telemetry(climbing_session.session_id, {"altitude_ft": 8000})
+        assert r.telemetry_fired is False
+        assert r.next_state_id == "PILOT_AWAIT_CLIMB"
+
+    def test_level_bust_calls_out_once_and_returns_to_wait(self, climbing_session):
+        sid = climbing_session.session_id
+        # 15400 ft > FL150 + 300. Note this also satisfies the handoff edge, but
+        # the bust callout requires 8 s vs the handoff's 3 s — age past the
+        # handoff first and mark it fired so only the bust edge remains.
+        # In a real climb the handoff fires first (lower threshold reached
+        # earlier); to test the bust edge in isolation, pre-mark the handoff.
+        session = get_session(sid)
+        session.fired_telemetry.append("PILOT_AWAIT_CLIMB::0::ATC_CENTER_HANDOFF")
+        session_store.save_session(session)
+        r1 = process_telemetry(sid, {"altitude_ft": 15400})
+        assert r1.telemetry_fired is False  # arming the bust edge
+        self._age_pending(sid, 9000)
+        r2 = process_telemetry(sid, {"altitude_ft": 15400})
+        assert r2.telemetry_fired is True
+        assert r2.next_state_id == "PILOT_AWAIT_CLIMB"  # callout, then back to waiting
+        assert "check altitude" in (r2.controller_say_rendered or "").lower()
+
+    def test_phrase_fallback_still_works(self, climbing_session):
+        from app.decision_engine import process_transmission
+        from app.models import DecisionRequest
+        resp = process_transmission(
+            climbing_session.session_id,
+            DecisionRequest(pilot_utterance="DLH39A reaching flight level 150"),
+        )
+        assert resp.next_state_id == "PILOT_CENTER_FREQ_READBACK"
+        assert "contact center" in (resp.controller_say_rendered or "").lower()
+
+    def test_silence_fallback_still_works(self, climbing_session):
+        resp = process_timeout(climbing_session.session_id)
+        assert resp.next_state_id == "PILOT_CENTER_FREQ_READBACK"
+
+
+# ---------------------------------------------------------------------------
+# Integration: ifr-tower-landing-v1 — vacated detected from groundspeed
+# ---------------------------------------------------------------------------
+
+class TestVacatedByGroundspeed:
+    @pytest.fixture(autouse=True)
+    def load_flows(self):
+        from app.flow_loader import load_all_flows
+        load_all_flows(FLOWS_DIR)
+        session_store._sessions.clear()
+
+    @pytest.fixture
+    def landed_session(self):
+        """An ifr-tower-landing session advanced to PILOT_RUNWAY_VACATED."""
+        from app.decision_engine import process_transmission
+        from app.flow_loader import get_flow
+        from app.models import DecisionRequest
+
+        session = create_session(get_flow("ifr-tower-landing-v1"), no_chain=True)
+        for utterance in (
+            "DLH6RK, established ILS runway 26L",
+            "cleared to land runway 26L, DLH6RK",
+        ):
+            resp = process_transmission(session.session_id, DecisionRequest(pilot_utterance=utterance))
+        assert resp.next_state_id == "PILOT_RUNWAY_VACATED"
+        return session
+
+    def _age_pending(self, session_id: str, ms: float) -> None:
+        session = get_session(session_id)
+        for key in list(session.telemetry_pending):
+            session.telemetry_pending[key] -= ms
+        session_store.save_session(session)
+
+    def test_taxi_speed_triggers_the_handoff(self, landed_session):
+        r1 = process_telemetry(landed_session.session_id, {"gs_kts": 18})
+        assert r1.telemetry_fired is False  # arming (8 s hold)
+        self._age_pending(landed_session.session_id, 9000)
+        r2 = process_telemetry(landed_session.session_id, {"gs_kts": 15})
+        assert r2.telemetry_fired is True
+        assert r2.next_state_id == "PILOT_GROUND_FREQ_READBACK"
+        assert "contact ground" in (r2.controller_say_rendered or "").lower()
+
+    def test_approach_speed_does_not_fire(self, landed_session):
+        r = process_telemetry(landed_session.session_id, {"gs_kts": 135})
+        assert r.telemetry_fired is False
+        assert r.next_state_id == "PILOT_RUNWAY_VACATED"

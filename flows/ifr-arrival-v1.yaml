@@ -231,7 +231,7 @@ states:
     readback_mode: simple
 
     ok_next:
-      - to: ATC_INTERMEDIATE_VECTOR
+      - to: PILOT_AWAIT_DESCENT
         trigger: ".*"
         label: "Descent readback evaluated — correct"
 
@@ -240,6 +240,82 @@ states:
         label: "Readback missing altitude, QNH, transition level or speed — controller corrects"
 
     auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 3b. Descent — Approach waits until the aircraft nears the cleared altitude
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Exits (works with and without a sim bridge):
+  #   telemetry — within 1500 ft of the cleared altitude (held 3 s)
+  #   telemetry — speed check callout (15 kt above assigned, held 12 s, once)
+  #   phrase    — pilot reports reaching/passing the altitude
+  #   silence   — no bridge, no report: continue after the timeout anyway
+  PILOT_AWAIT_DESCENT:
+    role: pilot
+    phase: approach
+    name: "Descending — Awaiting Altitude"
+    description: "Aircraft is descending to the cleared altitude; Approach continues with the next vector as it gets there"
+    expected_pilot_template: "Reaching {{intermediate_altitude}} feet, {{callsign}}"
+    frequency_name: "Approach"
+
+    auto_advance_on_silence: true
+    auto_advance_timeout_ms: 60000
+
+    ok_next:
+      - to: ATC_INTERMEDIATE_VECTOR
+        trigger: "reaching|approaching|level|passing"
+        label: "Pilot reported reaching the cleared altitude"
+
+    bad_next:
+      - to: ATC_AWAIT_DESCENT_ROGER
+        label: "Other call during the descent — Approach acknowledges and keeps waiting"
+
+    auto_transitions:
+      - to: ATC_INTERMEDIATE_VECTOR
+        telemetry:
+          parameter: altitude_ft
+          operator: lte
+          value: "{{intermediate_altitude}}"
+          offset: 1500
+          for_ms: 3000
+        label: "Telemetry: approaching cleared altitude — next vector"
+      - to: ATC_SPEED_CHECK_INITIAL
+        telemetry:
+          parameter: ias_kts
+          operator: gt
+          value: "{{speed_initial}}"
+          offset: 15
+          for_ms: 12000
+        label: "Telemetry: above assigned speed — check speed"
+      - to: ATC_INTERMEDIATE_VECTOR
+        label: "Silence timeout — continue without an altitude report"
+
+  ATC_AWAIT_DESCENT_ROGER:
+    role: atc
+    phase: approach
+    name: "Approach Acknowledges Call During Descent"
+    description: "Pilot transmitted something other than an altitude report; Approach acknowledges and keeps waiting"
+    say_template: "{{callsign}}, roger"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_AWAIT_DESCENT
+        label: "Acknowledged — still awaiting the altitude"
+
+  ATC_SPEED_CHECK_INITIAL:
+    role: atc
+    phase: approach
+    name: "Approach Calls Out Speed Deviation"
+    description: "The aircraft is faster than its assigned speed — controller tells the pilot to check speed"
+    say_template: "{{callsign}}, check speed, assigned speed is {{speed_initial}} knots"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_AWAIT_DESCENT
+        label: "Speed called out — back to awaiting the altitude"
 
   ATC_DESCENT_READBACK_INCORRECT:
     role: atc
@@ -287,7 +363,7 @@ states:
     readback_mode: simple
 
     ok_next:
-      - to: ATC_ILS_CLEARANCE
+      - to: PILOT_AWAIT_INTERCEPT
         trigger: ".*"
         label: "Vector readback evaluated — correct"
 
@@ -296,6 +372,86 @@ states:
         label: "Readback missing heading, altitude or speed — controller corrects"
 
     auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 4b. Base/intercept — waits until the aircraft nears the intercept altitude
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Exits: telemetry (intercept altitude +500 ft, or within 18 nm of the field),
+  # a speed check callout, a pilot report, or the silence fallback.
+  PILOT_AWAIT_INTERCEPT:
+    role: pilot
+    phase: approach
+    name: "On the Vector — Awaiting Intercept"
+    description: "Aircraft is descending on the closing heading; Approach issues the ILS clearance as it nears the intercept"
+    expected_pilot_template: "Reaching {{intercept_altitude}} feet, {{callsign}}"
+    frequency_name: "Approach"
+
+    auto_advance_on_silence: true
+    auto_advance_timeout_ms: 60000
+
+    ok_next:
+      - to: ATC_ILS_CLEARANCE
+        trigger: "reaching|approaching|level|passing"
+        label: "Pilot reported reaching the intercept altitude"
+
+    bad_next:
+      - to: ATC_AWAIT_INTERCEPT_ROGER
+        label: "Other call on the vector — Approach acknowledges and keeps waiting"
+
+    auto_transitions:
+      - to: ATC_ILS_CLEARANCE
+        telemetry:
+          parameter: altitude_ft
+          operator: lte
+          value: "{{intercept_altitude}}"
+          offset: 500
+          for_ms: 3000
+        label: "Telemetry: at intercept altitude — ILS clearance"
+      - to: ATC_ILS_CLEARANCE
+        telemetry:
+          parameter: distance_to_dest_nm
+          operator: lte
+          value: 18
+          for_ms: 3000
+        label: "Telemetry: closing on the field — ILS clearance"
+      - to: ATC_SPEED_CHECK_INTERMEDIATE
+        telemetry:
+          parameter: ias_kts
+          operator: gt
+          value: "{{speed_intermediate}}"
+          offset: 15
+          for_ms: 12000
+        label: "Telemetry: above assigned speed — check speed"
+      - to: ATC_ILS_CLEARANCE
+        label: "Silence timeout — issue the ILS clearance anyway"
+
+  ATC_AWAIT_INTERCEPT_ROGER:
+    role: atc
+    phase: approach
+    name: "Approach Acknowledges Call on the Vector"
+    description: "Pilot transmitted something other than an altitude report; Approach acknowledges and keeps waiting"
+    say_template: "{{callsign}}, roger"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_AWAIT_INTERCEPT
+        label: "Acknowledged — still awaiting the intercept"
+
+  ATC_SPEED_CHECK_INTERMEDIATE:
+    role: atc
+    phase: approach
+    name: "Approach Calls Out Speed Deviation on the Vector"
+    description: "The aircraft is faster than its assigned speed — controller tells the pilot to check speed"
+    say_template: "{{callsign}}, check speed, assigned speed is {{speed_intermediate}} knots"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_AWAIT_INTERCEPT
+        label: "Speed called out — back to awaiting the intercept"
 
   ATC_VECTOR_READBACK_INCORRECT:
     role: atc
@@ -347,7 +503,7 @@ states:
     readback_mode: simple
 
     ok_next:
-      - to: ATC_TOWER_HANDOFF
+      - to: PILOT_AWAIT_ESTABLISHED
         trigger: ".*"
         label: "ILS readback evaluated — correct"
 
@@ -356,6 +512,56 @@ states:
         label: "Readback missing heading, runway or speed — controller corrects"
 
     auto_transitions: []
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 5b. Intercepting the ILS — Tower handoff once close in / established
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Exits: telemetry (within 10 nm of the field, held 3 s), the pilot's
+  # established report, or the silence fallback.
+  PILOT_AWAIT_ESTABLISHED:
+    role: pilot
+    phase: approach
+    name: "Intercepting — Awaiting Established"
+    description: "Aircraft is intercepting the final approach course; Approach hands off to Tower once established / close in"
+    expected_pilot_template: "Established ILS runway {{runway}}, {{callsign}}"
+    frequency_name: "Approach"
+
+    auto_advance_on_silence: true
+    auto_advance_timeout_ms: 45000
+
+    ok_next:
+      - to: ATC_TOWER_HANDOFF
+        trigger: "establish|localizer|localiser|glideslope|final"
+        label: "Pilot reported established"
+
+    bad_next:
+      - to: ATC_AWAIT_ESTABLISHED_ROGER
+        label: "Other call while intercepting — Approach acknowledges and keeps waiting"
+
+    auto_transitions:
+      - to: ATC_TOWER_HANDOFF
+        telemetry:
+          parameter: distance_to_dest_nm
+          operator: lte
+          value: 10
+          for_ms: 3000
+        label: "Telemetry: close in on final — hand off to Tower"
+      - to: ATC_TOWER_HANDOFF
+        label: "Silence timeout — hand off without an established report"
+
+  ATC_AWAIT_ESTABLISHED_ROGER:
+    role: atc
+    phase: approach
+    name: "Approach Acknowledges Call While Intercepting"
+    description: "Pilot transmitted something other than an established report; Approach acknowledges and keeps waiting"
+    say_template: "{{callsign}}, roger"
+    frequency_name: "Approach"
+
+    ok_next: []
+    bad_next: []
+    auto_transitions:
+      - to: PILOT_AWAIT_ESTABLISHED
+        label: "Acknowledged — still awaiting established"
 
   ATC_ILS_READBACK_INCORRECT:
     role: atc
