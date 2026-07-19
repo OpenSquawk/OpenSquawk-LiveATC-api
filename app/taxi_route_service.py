@@ -133,6 +133,8 @@ def resolve_taxi_clearance(
     origin_lon: float | None = None,
     origin_runway_point: RunwayPoint = "start",
     dest_runway_point: RunwayPoint = "start",
+    origin_prefer: Literal["stand", "runway"] | None = None,
+    dest_prefer: Literal["stand", "runway"] | None = None,
     client: OverpassClient | None = None,
 ) -> dict[str, Any] | None:
     """Compute the taxi clearance variables for one route, or ``None``.
@@ -153,8 +155,9 @@ def resolve_taxi_clearance(
         lat=origin_lat,
         lon=origin_lon,
         runway_point=origin_runway_point,
+        prefer=origin_prefer,
     )
-    dest = GeocodeQuery(name=dest_name, runway_point=dest_runway_point)
+    dest = GeocodeQuery(name=dest_name, runway_point=dest_runway_point, prefer=dest_prefer)
     try:
         result = calculate_taxi_route(
             origin=origin,
@@ -312,6 +315,10 @@ def maybe_compute_taxi_route(
         origin_lon=origin_lon,
         origin_runway_point=spec.origin_runway_point,
         dest_runway_point=spec.dest_runway_point,
+        # The flow spec knows which side is the parking stand — that intent
+        # disambiguates airports where a stand and a runway share a name.
+        origin_prefer="stand" if spec.stand_side == "origin" else "runway",
+        dest_prefer="stand" if spec.stand_side == "dest" else "runway",
         client=overpass,
     )
     if computed is not None and spoken_update:

@@ -59,6 +59,10 @@ class GeocodeQuery:
     lat: float | None = None
     lon: float | None = None
     runway_point: RunwayPoint = "start"
+    # Airports can have a stand and a runway with the same designator (EDDN:
+    # stand "10", runway "10"). The caller usually knows which side of the
+    # taxi route is the parking stand — this hint tips otherwise-tied matches.
+    prefer: Literal["stand", "runway"] | None = None
 
 
 @dataclass(frozen=True)
@@ -316,7 +320,14 @@ def _analyze_query(query: str) -> tuple[str, str, bool]:
     return trimmed, sanitized, runway_bias
 
 
-def match_feature_by_name(features: list[AirportFeature], query: str) -> GeocodeMatch | None:
+_STAND_FAMILY: tuple[str, ...] = ("stand", "gate", "parking_position")
+
+
+def match_feature_by_name(
+    features: list[AirportFeature],
+    query: str,
+    prefer: Literal["stand", "runway"] | None = None,
+) -> GeocodeMatch | None:
     if not query:
         return None
 
@@ -333,10 +344,14 @@ def match_feature_by_name(features: list[AirportFeature], query: str) -> Geocode
     for feature in features:
         for alias_variant, original_alias in feature.normalized_aliases.items():
             for variant in variants:
+                # An exact alias match must beat every substring match, no
+                # matter the bias — otherwise a stand named "53" loses to
+                # runway "15/33" ("53" is a substring of "1533") and taxi
+                # routes degenerate to the runway itself.
                 if alias_variant == variant:
-                    score = 100
+                    score = 1000
                 elif alias_variant in variant or variant in alias_variant:
-                    score = 70
+                    score = 700
                 else:
                     continue
 
@@ -346,6 +361,12 @@ def match_feature_by_name(features: list[AirportFeature], query: str) -> Geocode
                     score += 10
                 if feature.type in ("gate", "stand"):
                     score += 2
+                # The caller's intent outweighs the query-shape heuristics
+                # (but never an exactness tier).
+                if prefer == "stand" and feature.type in _STAND_FAMILY:
+                    score += 50
+                elif prefer == "runway" and feature.type == "runway":
+                    score += 50
 
                 if best is None or score > best[0]:
                     best = (score, feature, original_alias)
@@ -382,7 +403,7 @@ def match_feature_by_coordinate(
 
 def resolve_feature(features: list[AirportFeature], query: GeocodeQuery) -> GeocodeMatch | None:
     if query.name:
-        match = match_feature_by_name(features, query.name)
+        match = match_feature_by_name(features, query.name, prefer=query.prefer)
         if match is not None:
             return match
 
@@ -473,9 +494,46 @@ def parse_airport_features(osm: dict[str, Any]) -> list[AirportFeature]:
     return features
 
 
+# Covers even the largest German field from its reference point.
+_FEATURES_FALLBACK_RADIUS_M = 7000
+
+
+def airport_features_around_query(lat: float, lon: float, radius_m: int = _FEATURES_FALLBACK_RADIUS_M) -> str:
+    around = f"(around:{radius_m},{lat},{lon})"
+    return f"""
+[out:json][timeout:60];
+(
+  node{around}["aeroway"="parking_position"];
+  way{around}["aeroway"="parking_position"];
+  node{around}["aeroway"="gate"];
+  way{around}["aeroway"="gate"];
+  node{around}["aeroway"="runway"];
+  node{around}["aeroway"="taxiway"];
+  node{around}["aeroway"="holding_position"];
+  way{around}["aeroway"="runway"];
+  way{around}["aeroway"="taxiway"];
+  way{around}["aeroway"="holding_position"];
+);
+out body center;
+"""
+
+
 def fetch_airport_features(airport: str, client: OverpassClient | None = None) -> list[AirportFeature]:
     overpass = client or OverpassClient()
-    return parse_airport_features(overpass.fetch_json(airport_features_query(airport)))
+    features = parse_airport_features(overpass.fetch_json(airport_features_query(airport)))
+    if features:
+        return features
+
+    # Some aerodromes (e.g. EDDM's multipolygon relation) have no generated
+    # Overpass area, so the area query comes back empty. Fall back to a radius
+    # query around the airport's reference point from the local database.
+    from app.airport_data import airport_coords
+
+    coords = airport_coords(airport)
+    if coords is None:
+        return features
+    lat, lon = coords
+    return parse_airport_features(overpass.fetch_json(airport_features_around_query(lat, lon)))
 
 
 def fetch_way_endpoints(
