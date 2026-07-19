@@ -93,7 +93,12 @@ class OverpassClient:
         request = urllib.request.Request(
             self.endpoint,
             data=body,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                # overpass-api.de answers 406 to the Python default UA;
+                # without this header every live route computation fails.
+                "User-Agent": "OpenSquawk-LiveATC/1.0 (https://opensquawk.de)",
+            },
             method="POST",
         )
         try:

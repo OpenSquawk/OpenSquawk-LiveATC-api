@@ -117,3 +117,34 @@ def test_resolve_query_dataclass_accepts_runway_point_default():
     query = GeocodeQuery(name="RWY 25R")
 
     assert query.runway_point == "start"
+
+
+def test_overpass_client_sends_descriptive_user_agent(monkeypatch):
+    """overpass-api.de rejects the Python default UA with HTTP 406 — every
+    request must carry a descriptive User-Agent or taxi routing silently
+    falls back to the YAML default route."""
+    import io
+    import json as jsonlib
+
+    from app.airport_geocode import OverpassClient
+
+    captured = {}
+
+    class FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        captured["headers"] = dict(request.header_items())
+        return FakeResponse(jsonlib.dumps({"elements": []}).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    OverpassClient().fetch_json("[out:json];node(1);out;")
+
+    agent = next((v for k, v in captured["headers"].items() if k.lower() == "user-agent"), "")
+    assert agent, "no User-Agent header sent"
+    assert "python-urllib" not in agent.lower(), f"default UA is blocked by Overpass: {agent}"
+    assert "opensquawk" in agent.lower(), f"UA should identify the product: {agent}"
