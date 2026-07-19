@@ -309,3 +309,56 @@ def test_calculate_taxi_route_attaches_to_component_reaching_both_endpoints():
     assert result["route"] is not None, "must route via the shared component, not the closer stub"
     assert result["names_collapsed"] == ["A"]
     assert result["diagnostics"]["same_component"] is True
+
+
+def test_area_less_airport_uses_stable_around_graph_query():
+    """EDDM's aerodrome has no generated Overpass area, so the area graph
+    query returns nothing. The fallback must be ONE around-query centred on
+    the airport's reference point — identical for every stand/runway pair, so
+    it caches — not a per-endpoint radius query that re-hits Overpass for
+    every combination."""
+    queries: list[str] = []
+
+    class AreaLessGraphClient:
+        def fetch_json(self, query: str):
+            queries.append(query)
+            if "area" in query and "aerodrome" in query:
+                return {"elements": []}
+            assert "around" in query, f"expected airport-centred around query, got: {query[:120]}"
+            # Airport-centred graph: EDDM reference is ~48.35/11.79 — the
+            # query must be built from those coordinates, not the endpoints.
+            assert "48.35" in query
+            return {
+                "elements": [
+                    {"type": "node", "id": 1, "lat": 48.35, "lon": 11.78},
+                    {"type": "node", "id": 2, "lat": 48.351, "lon": 11.785},
+                    {"type": "way", "id": 100, "nodes": [1, 2], "tags": {"aeroway": "taxiway", "ref": "A"}},
+                ]
+            }
+
+    client = AreaLessGraphClient()
+    result = calculate_taxi_route(
+        airport="EDDM",
+        origin=GeocodeQuery(lat=48.3501, lon=11.7801),
+        dest=GeocodeQuery(lat=48.3509, lon=11.7849),
+        client=client,
+    )
+
+    assert result["route"] is not None
+    assert result["names_collapsed"] == ["A"]
+
+    # A second pair with different endpoints must produce the *same* graph
+    # query string — otherwise every stand/runway combination re-hits
+    # Overpass instead of the cache.
+    first_around = [q for q in queries if "around" in q]
+    queries.clear()
+    calculate_taxi_route(
+        airport="EDDM",
+        origin=GeocodeQuery(lat=48.3601, lon=11.7901),
+        dest=GeocodeQuery(lat=48.3409, lon=11.7749),
+        client=client,
+    )
+    second_around = [q for q in queries if "around" in q]
+    assert len(first_around) == 1 and first_around == second_around, (
+        "graph query must be endpoint-independent for area-less airports"
+    )

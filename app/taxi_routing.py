@@ -121,6 +121,32 @@ out body;
 """
 
 
+def taxiway_graph_around_query(
+    lat: float,
+    lon: float,
+    include_connectors: bool = False,
+    radius_m: float = 7000,
+) -> str:
+    """Airport-centred graph query for aerodromes without an Overpass area.
+
+    Centred on the airport's reference point, so the query string is identical
+    for every stand/runway pair and the Overpass cache keys on the airport —
+    unlike the endpoint radius query, which differs per pair.
+    """
+    selectors = "\n".join(
+        f'  way["aeroway"="{t}"](around:{radius_m},{lat},{lon});'
+        for t in _graph_aeroway_types(include_connectors)
+    )
+    return f"""
+[out:json][timeout:90];
+(
+{selectors}
+);
+(._;>;);
+out body;
+"""
+
+
 def taxiway_graph_area_query(airport: str, include_connectors: bool = False) -> str:
     """Airport-area-scoped graph query: all taxiways inside the aerodrome.
 
@@ -644,14 +670,28 @@ def _fetch_graph(
 ) -> tuple[dict[str, Any], TaxiwayGraph]:
     """Prefer an airport-area graph when an ICAO is known; fall back to radius.
 
-    The area query cannot miss middle taxiways on large fields. If the aerodrome
-    area cannot be resolved (graph empty), fall back to the radius query.
+    The area query cannot miss middle taxiways on large fields. If the
+    aerodrome area cannot be resolved (graph empty — e.g. EDDM's multipolygon
+    has no generated Overpass area), try a stable airport-centred around
+    query before the per-endpoint radius query, so the result still caches
+    per airport instead of per stand/runway pair.
     """
     if airport_code:
         osm = overpass.fetch_json(taxiway_graph_area_query(airport_code, include_connectors))
         graph = parse_taxiway_graph(osm, include_connectors=include_connectors)
         if graph.nodes:
             return osm, graph
+
+        from app.airport_data import airport_coords
+
+        coords = airport_coords(airport_code)
+        if coords is not None:
+            osm = overpass.fetch_json(
+                taxiway_graph_around_query(coords[0], coords[1], include_connectors)
+            )
+            graph = parse_taxiway_graph(osm, include_connectors=include_connectors)
+            if graph.nodes:
+                return osm, graph
     osm = overpass.fetch_json(
         taxiway_graph_query(o_lat, o_lon, d_lat, d_lon, radius_m, include_connectors)
     )
