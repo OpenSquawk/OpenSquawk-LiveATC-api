@@ -269,3 +269,43 @@ def test_diagnostics_report_same_component_on_success():
     assert result["route"] is not None
     assert result["diagnostics"]["same_component"] is True
     assert result["diagnostics"]["way_count"] >= 1
+
+
+class DisconnectedStubClient:
+    """Airport whose runway end sits next to a disconnected taxiway stub.
+
+    Main network: nodes 1-2-3 ("A") near the stand AND (further away) near the
+    runway end. Stub: nodes 8-9 ("Z"), CLOSER to the runway end but connected
+    to nothing else. Naive nearest-node attachment picks the stub and finds no
+    path; component-aware attachment must route via "A".
+    """
+
+    def fetch_json(self, query: str):
+        if "aeroway" in query and "area" in query:
+            return {
+                "elements": [
+                    {"type": "node", "id": 1, "lat": 50.0, "lon": 8.0},
+                    {"type": "node", "id": 2, "lat": 50.0, "lon": 8.01},
+                    {"type": "node", "id": 3, "lat": 50.0, "lon": 8.02},
+                    {"type": "node", "id": 8, "lat": 50.003, "lon": 8.03},
+                    {"type": "node", "id": 9, "lat": 50.004, "lon": 8.03},
+                    {"type": "way", "id": 100, "nodes": [1, 2, 3], "tags": {"aeroway": "taxiway", "ref": "A"}},
+                    {"type": "way", "id": 200, "nodes": [8, 9], "tags": {"aeroway": "taxiway", "ref": "Z"}},
+                ]
+            }
+        raise AssertionError(f"unexpected query: {query}")
+
+
+def test_calculate_taxi_route_attaches_to_component_reaching_both_endpoints():
+    # Stand at node 1; "runway end" coordinates right next to the stub (8/9)
+    # but ~1.1 km from the main network's node 3.
+    result = calculate_taxi_route(
+        airport="EDDX",
+        origin=GeocodeQuery(lat=50.0, lon=8.0001),
+        dest=GeocodeQuery(lat=50.0035, lon=8.0301),
+        client=DisconnectedStubClient(),
+    )
+
+    assert result["route"] is not None, "must route via the shared component, not the closer stub"
+    assert result["names_collapsed"] == ["A"]
+    assert result["diagnostics"]["same_component"] is True

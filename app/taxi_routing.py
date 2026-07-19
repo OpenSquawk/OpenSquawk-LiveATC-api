@@ -364,9 +364,16 @@ def detect_crossings(
     return ordered
 
 
-def nearest_node(graph: TaxiwayGraph, lat: float, lon: float) -> Attachment | None:
+def nearest_node(
+    graph: TaxiwayGraph,
+    lat: float,
+    lon: float,
+    allowed: set[int] | None = None,
+) -> Attachment | None:
     best: tuple[float, GraphNode] | None = None
     for node in graph.nodes.values():
+        if allowed is not None and node.id not in allowed:
+            continue
         distance_m = haversine_distance((lat, lon), (node.lat, node.lon))
         if best is None or distance_m < best[0]:
             best = (distance_m, node)
@@ -380,6 +387,72 @@ def nearest_node(graph: TaxiwayGraph, lat: float, lon: float) -> Attachment | No
         lat=node.lat,
         lon=node.lon,
         distance_m=distance_m,
+    )
+
+
+def _connected_components(graph: TaxiwayGraph) -> list[set[int]]:
+    """Connected components of the taxiway graph, by node id."""
+    seen: set[int] = set()
+    components: list[set[int]] = []
+    for start in graph.nodes:
+        if start in seen:
+            continue
+        component = {start}
+        stack = [start]
+        while stack:
+            u = stack.pop()
+            for v, _ in graph.adjacency.get(u, []):
+                if v not in component:
+                    component.add(v)
+                    stack.append(v)
+        seen |= component
+        components.append(component)
+    return components
+
+
+# An endpoint further than this from a component is not served by it — a stand
+# or holding point sits within a few hundred metres of its taxiway network.
+MAX_ATTACH_DISTANCE_M = 2000.0
+
+
+def attach_endpoints(
+    graph: TaxiwayGraph,
+    origin: tuple[float, float],
+    dest: tuple[float, float],
+    max_attach_m: float = MAX_ATTACH_DISTANCE_M,
+) -> tuple[Attachment | None, Attachment | None]:
+    """Attach both endpoints to the graph so a path can exist between them.
+
+    OSM airport data regularly contains disconnected taxiway fragments (an
+    unconnected stub next to a runway end, a separate GA apron). Attaching each
+    endpoint to its globally nearest node then fails with "different
+    components" even though the main network serves both. Instead, pick the
+    component that minimizes the combined attach distance of BOTH endpoints —
+    but only among components that plausibly serve both (attach distance under
+    ``max_attach_m``). When no component qualifies, fall back to the globally
+    nearest nodes so the caller's diagnostics still describe the split.
+    """
+    components = _connected_components(graph)
+    if not components:
+        return None, None
+
+    best: tuple[float, Attachment, Attachment] | None = None
+    for component in components:
+        start = nearest_node(graph, origin[0], origin[1], allowed=component)
+        end = nearest_node(graph, dest[0], dest[1], allowed=component)
+        if start is None or end is None:
+            continue
+        if start.distance_m > max_attach_m or end.distance_m > max_attach_m:
+            continue
+        cost = start.distance_m + end.distance_m
+        if best is None or cost < best[0]:
+            best = (cost, start, end)
+
+    if best is not None:
+        return best[1], best[2]
+    return (
+        nearest_node(graph, origin[0], origin[1]),
+        nearest_node(graph, dest[0], dest[1]),
     )
 
 
@@ -664,8 +737,7 @@ def calculate_taxi_route(
     graph_osm, graph = _fetch_graph(
         overpass, airport_code, o_lat, o_lon, d_lat, d_lon, radius_m, include_connectors
     )
-    start_attach = nearest_node(graph, o_lat, o_lon)
-    end_attach = nearest_node(graph, d_lat, d_lon)
+    start_attach, end_attach = attach_endpoints(graph, (o_lat, o_lon), (d_lat, d_lon))
 
     origin_payload = _endpoint_payload(o_lat, o_lon, origin, origin_coords_provided, origin_match)
     dest_payload = _endpoint_payload(d_lat, d_lon, dest, dest_coords_provided, dest_match)
