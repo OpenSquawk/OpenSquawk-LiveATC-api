@@ -148,3 +148,47 @@ def test_overpass_client_sends_descriptive_user_agent(monkeypatch):
     assert agent, "no User-Agent header sent"
     assert "python-urllib" not in agent.lower(), f"default UA is blocked by Overpass: {agent}"
     assert "opensquawk" in agent.lower(), f"UA should identify the product: {agent}"
+
+
+def test_apply_runway_point_is_designator_aware():
+    """'start' must mean the threshold of the *matched designator*, not the
+    OSM way's arbitrary first node. Way 200 runs SW(50.0,8.0) -> NE(50.1,8.1),
+    so its geometric start is the 07L threshold; a departure from 25R lines up
+    at the opposite (NE) end."""
+    runway = create_feature(
+        {
+            "type": "way",
+            "id": 200,
+            "center": {"lat": 50.05, "lon": 8.05},
+            "nodes": [10, 11],
+            "tags": {"aeroway": "runway", "ref": "07L/25R"},
+        }
+    )
+    assert runway is not None
+
+    match_25 = GeocodeMatch(feature=runway, matched_alias="25R", source="name")
+    start_25 = apply_runway_point(match_25, "start", client=FakeOverpassClient())
+    end_25 = apply_runway_point(match_25, "end", client=FakeOverpassClient())
+
+    assert (start_25.feature.lat, start_25.feature.lon) == (50.1, 8.1)
+    assert (end_25.feature.lat, end_25.feature.lon) == (50.0, 8.0)
+
+
+def test_apply_runway_point_without_designator_keeps_way_order():
+    """A match on the full ref ("07L/25R") has no single heading — fall back
+    to the way's geometric order."""
+    runway = create_feature(
+        {
+            "type": "way",
+            "id": 200,
+            "center": {"lat": 50.05, "lon": 8.05},
+            "nodes": [10, 11],
+            "tags": {"aeroway": "runway", "ref": "07L/25R"},
+        }
+    )
+    assert runway is not None
+
+    match = GeocodeMatch(feature=runway, matched_alias="07L/25R", source="name")
+    start = apply_runway_point(match, "start", client=FakeOverpassClient())
+
+    assert (start.feature.lat, start.feature.lon) == (50.0, 8.0)

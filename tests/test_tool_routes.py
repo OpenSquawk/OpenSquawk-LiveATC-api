@@ -50,7 +50,7 @@ class FakeOverpassClient:
                 "elements": [
                     {"type": "way", "id": 600, "nodes": [601, 602]},
                     {"type": "node", "id": 601, "lat": 50.001, "lon": 8.002},
-                    {"type": "node", "id": 602, "lat": 50.5, "lon": 8.5},
+                    {"type": "node", "id": 602, "lat": 49.995, "lon": 7.98},  # SW of 601 so "25C" (250 deg) has its threshold at 601
                 ]
             }
         if 'area["aeroway"="aerodrome"]' in query:

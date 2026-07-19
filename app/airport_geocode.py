@@ -478,13 +478,11 @@ def fetch_airport_features(airport: str, client: OverpassClient | None = None) -
     return parse_airport_features(overpass.fetch_json(airport_features_query(airport)))
 
 
-def fetch_way_endpoint(
+def fetch_way_endpoints(
     way_id: int,
-    runway_point: RunwayPoint,
     client: OverpassClient | None = None,
-) -> tuple[float, float] | None:
-    if runway_point == "center":
-        return None
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Both geometric endpoints of a way, in node order: ``(first, last)``."""
 
     overpass = client or OverpassClient()
     osm = overpass.fetch_json(way_nodes_query(way_id))
@@ -513,8 +511,49 @@ def fetch_way_endpoint(
     if not way_nodes:
         return None
 
-    node_id = way_nodes[0] if runway_point == "start" else way_nodes[-1]
-    return nodes.get(node_id)
+    first = nodes.get(way_nodes[0])
+    last = nodes.get(way_nodes[-1])
+    if first is None or last is None:
+        return None
+    return first, last
+
+
+def fetch_way_endpoint(
+    way_id: int,
+    runway_point: RunwayPoint,
+    client: OverpassClient | None = None,
+) -> tuple[float, float] | None:
+    if runway_point == "center":
+        return None
+    endpoints = fetch_way_endpoints(way_id, client=client)
+    if endpoints is None:
+        return None
+    return endpoints[0] if runway_point == "start" else endpoints[1]
+
+
+_RUNWAY_DESIGNATOR_RE = re.compile(r"^(\d{2})[LRC]?$")
+
+
+def _designator_heading_degrees(alias: str) -> float | None:
+    """Magnetic heading a runway-end designator implies ("25R" -> 250)."""
+    match = _RUNWAY_DESIGNATOR_RE.match(alias.strip().upper().replace(" ", ""))
+    if match is None:
+        return None
+    return int(match.group(1)) * 10.0
+
+
+def _bearing_degrees(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Initial great-circle bearing from ``a`` to ``b`` in [0, 360)."""
+    lat1, lon1, lat2, lon2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    d_lon = lon2 - lon1
+    x = math.sin(d_lon) * math.cos(lat2)
+    y = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(d_lon)
+    return (math.degrees(math.atan2(x, y)) + 360.0) % 360.0
+
+
+def _angle_difference(a: float, b: float) -> float:
+    diff = abs(a - b) % 360.0
+    return min(diff, 360.0 - diff)
 
 
 def apply_runway_point(
@@ -522,17 +561,33 @@ def apply_runway_point(
     runway_point: RunwayPoint,
     client: OverpassClient | None = None,
 ) -> GeocodeMatch:
-    """Move a named runway-way match from center to requested start/end point."""
+    """Move a named runway-way match to the requested runway point.
+
+    ``start`` means the **threshold of the matched designator** — the holding
+    point a departure lines up at — and ``end`` the far end a landing rolls
+    out toward. The OSM way's node order is arbitrary, so the ends are
+    disambiguated by comparing the way's bearing with the designator heading
+    ("25R" implies ~250°). Matches without a single designator (full refs like
+    "07L/25R") keep the way's geometric order.
+    """
 
     feature = match.feature
     if feature.type != "runway" or feature.osm_type != "way" or runway_point == "center":
         return match
 
-    endpoint = fetch_way_endpoint(feature.osm_id, runway_point, client=client)
-    if endpoint is None:
+    endpoints = fetch_way_endpoints(feature.osm_id, client=client)
+    if endpoints is None:
         return match
 
-    lat, lon = endpoint
+    threshold, far_end = endpoints
+    heading = _designator_heading_degrees(match.matched_alias or "")
+    if heading is not None:
+        # The threshold is the end you take off *from*: looking from it toward
+        # the other end must roughly match the designator heading.
+        if _angle_difference(_bearing_degrees(threshold, far_end), heading) > 90.0:
+            threshold, far_end = far_end, threshold
+
+    lat, lon = threshold if runway_point == "start" else far_end
     moved = replace(feature, lat=lat, lon=lon)
     return replace(match, feature=moved)
 
